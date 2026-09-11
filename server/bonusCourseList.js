@@ -10,9 +10,19 @@
 // A live course the table doesn't know gets its numeric id resolved from its
 // own public page (the instructor API returns Udemy's opaque base64 id, but
 // /manage/ URLs need the numeric one).
+import 'dotenv/config';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
+
+// The dashboard gates its routes behind basic auth. Read the credentials from
+// the environment (server/.env) - never hardcode them, this repo is public.
+const DASHBOARD_USER = process.env.DASHBOARD_USER || 'admin';
+const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
+const dashboardHeaders = () =>
+  DASHBOARD_PASSWORD
+    ? { Authorization: `Basic ${Buffer.from(`${DASHBOARD_USER}:${DASHBOARD_PASSWORD}`).toString('base64')}` }
+    : {};
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
@@ -22,14 +32,17 @@ const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
  *        resolve numeric ids for courses missing from the table.
  * @returns {Promise<Array<{realCourseId:number,title:string,slug:string|null,resolved:boolean}>>}
  */
-export async function liveBonusCourses(page, { auth = 'admin:sw-c044312d', port = 5055 } = {}) {
+export async function liveBonusCourses(page, { auth = null, port = 5055 } = {}) {
   const db = new Database(join(__dirname, 'dashboard.db'), { readonly: true });
   const table = db.prepare('SELECT real_course_id, title FROM udemy_real_course_ids').all();
   db.close();
   const idByTitle = new Map(table.map((r) => [norm(r.title), r.real_course_id]));
 
   const live = await fetch(`http://localhost:${port}/api/courses`, {
-    headers: { Authorization: `Basic ${Buffer.from(auth).toString('base64')}` },
+    // An explicit `auth` still wins; otherwise fall back to the environment.
+    headers: auth
+      ? { Authorization: `Basic ${Buffer.from(auth).toString('base64')}` }
+      : dashboardHeaders(),
   }).then((r) => r.json()).catch(() => null);
   if (!live?.results?.length) throw new Error('could not read /api/courses — is the backend up?');
 
