@@ -11,12 +11,23 @@
 // follow-up fix script can act on it. Changes nothing on Udemy.
 //
 // Run: node auditBonusTitles.js [--limit=N]
+import 'dotenv/config';
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { chromium } from 'playwright';
 import { minimizeWindow } from './browserWindow.js';
+
+// The dashboard gates its routes behind basic auth. Read the credentials from
+// the environment (server/.env) - never hardcode them, this repo is public.
+const DASHBOARD_USER = process.env.DASHBOARD_USER || 'admin';
+const DASHBOARD_PASSWORD = process.env.DASHBOARD_PASSWORD;
+const dashboardHeaders = () =>
+  DASHBOARD_PASSWORD
+    ? { Authorization: `Basic ${Buffer.from(`${DASHBOARD_USER}:${DASHBOARD_PASSWORD}`).toString('base64')}` }
+    : {};
+
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36';
@@ -36,7 +47,7 @@ const courses = db.prepare('SELECT real_course_id, title FROM udemy_real_course_
 
 // Current live titles, keyed by slug, straight from the instructor API.
 const live = await fetch('http://localhost:5055/api/courses', {
-  headers: { Authorization: `Basic ${Buffer.from('admin:sw-c044312d').toString('base64')}` },
+  headers: dashboardHeaders(),
 }).then((r) => r.json()).catch(() => null);
 if (!live?.results?.length) { console.error('❌ could not read /api/courses — is the backend up?'); process.exit(1); }
 const titleBySlug = {};

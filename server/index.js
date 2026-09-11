@@ -49,6 +49,30 @@ app.use(compression());
 app.use(cors());
 app.use(express.json());
 
+// --- Public: the marketing-tool course catalog ---------------------------
+// Mounted ABOVE the basic-auth gate on purpose, so /catalog is open to anyone
+// with the link (asked for 2026-09-11). Keep it above that gate - moving it
+// below puts the catalog behind the dashboard password.
+//
+// The file is a static build artifact from ~/marketing-tool, rebuilt daily at
+// 08:30 by the com.starweaver.marketing-tool-refresh launchd agent. It carries
+// only live course titles, links and their SWO/LPS parent + batch; it does not
+// touch this dashboard's revenue or enrollment data.
+const CATALOG_FILE =
+  process.env.CATALOG_FILE || join(__dirname, '..', '..', 'marketing-tool', 'dist', 'catalog.html');
+
+app.get('/catalog', (req, res) => {
+  if (!existsSync(CATALOG_FILE)) {
+    return res
+      .status(503)
+      .type('text/plain')
+      .send('The course catalog has not been built yet.\nRun: cd ~/marketing-tool && npm run refresh\n');
+  }
+  // Rebuilt daily, so never let a proxy pin yesterday's copy.
+  res.set('Cache-Control', 'no-cache');
+  res.sendFile(CATALOG_FILE);
+});
+
 // --- Access control ------------------------------------------------------
 // Gate everything behind HTTP basic auth when DASHBOARD_PASSWORD is set.
 // (Unset in local dev = open; set on Render = private.)
