@@ -49,9 +49,9 @@ app.use(compression());
 app.use(cors());
 app.use(express.json());
 
-// --- Public: the marketing-tool course catalog ---------------------------
-// Mounted ABOVE the basic-auth gate on purpose, so /catalog is open to anyone
-// with the link (asked for 2026-09-11). Keep it above that gate - moving it
+// --- Public: the Distribution Catalog for Marketing Team -----------------
+// Mounted ABOVE the basic-auth gate on purpose, so /distribution-catalog is open
+// to anyone with the link (asked for 2026-09-11). Keep it above that gate - moving it
 // below puts the catalog behind the dashboard password.
 //
 // The file is a static build artifact from ~/marketing-tool, rebuilt daily at
@@ -61,7 +61,7 @@ app.use(express.json());
 const CATALOG_FILE =
   process.env.CATALOG_FILE || join(__dirname, '..', '..', 'marketing-tool', 'dist', 'catalog.html');
 
-app.get('/catalog', (req, res) => {
+app.get('/distribution-catalog', (req, res) => {
   if (!existsSync(CATALOG_FILE)) {
     return res
       .status(503)
@@ -605,16 +605,6 @@ app.get('/bookmarklet', (req, res) => {
   const file = join(__dirname, 'bookmarklet.html');
   if (existsSync(file)) res.sendFile(file);
   else res.status(404).send('bookmarklet.html not found');
-});
-
-// Serve the Marketing Tool course catalog. It is a single self-contained file
-// built by the marketing-tool pipeline, so there is nothing to bundle here.
-// Registered before the SPA catch-all below, which would otherwise swallow it,
-// and it inherits the same basic-auth gate as every other route.
-app.get('/catalog', (req, res) => {
-  const file = join(__dirname, 'catalog.html');
-  if (existsSync(file)) res.sendFile(file);
-  else res.status(404).send('catalog.html not found - run the marketing-tool build and copy dist/index.html here');
 });
 
 // --- Serve the built frontend (production) -------------------------------
