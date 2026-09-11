@@ -607,6 +607,16 @@ app.get('/bookmarklet', (req, res) => {
   else res.status(404).send('bookmarklet.html not found');
 });
 
+// Serve the Marketing Tool course catalog. It is a single self-contained file
+// built by the marketing-tool pipeline, so there is nothing to bundle here.
+// Registered before the SPA catch-all below, which would otherwise swallow it,
+// and it inherits the same basic-auth gate as every other route.
+app.get('/catalog', (req, res) => {
+  const file = join(__dirname, 'catalog.html');
+  if (existsSync(file)) res.sendFile(file);
+  else res.status(404).send('catalog.html not found - run the marketing-tool build and copy dist/index.html here');
+});
+
 // --- Serve the built frontend (production) -------------------------------
 // In prod the React build is served from the same origin, so the client's
 // relative /api calls work with no proxy.
