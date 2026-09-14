@@ -29,15 +29,42 @@ const blockFor = (lang) => `<p><strong>${COPY[lang].h}</strong></p><p>${COPY[lan
 // matches an existing discount block in either language, with any code
 const EXISTING = /<p><strong>(?:Exclusive Student Discount|Descuento exclusivo para estudiantes)<\/strong><\/p>\s*<p>.*?<\/p>\s*(?:<p>\s*<br\s*\/?>\s*<\/p>\s*)?/is;
 
+// COURSE=<slug|id>[,...] limits the run to specific courses.
+const ONLY = (process.env.COURSE || '').split(',').map((x) => x.trim()).filter(Boolean);
+// Course list source. udemy_real_course_ids holds 141 rows while the account
+// has 183 courses, so for a long time 42 were silently never updated — they
+// were not reported as failures either, because the loop never saw them.
+// The live taught-courses list is fetched below; the table is only a fallback.
 const db = new Database(join(__dirname, 'dashboard.db'), { readonly: true });
-const courses = db.prepare('SELECT real_course_id, title FROM udemy_real_course_ids ORDER BY title').all();
-console.log(`${DRY ? '[DRY RUN] ' : ''}code=${DISCOUNT_CODE} · courses=${courses.length}`);
+let courses = db.prepare('SELECT real_course_id, title FROM udemy_real_course_ids ORDER BY title').all();
 
 const browser = await chromium.launch({ headless: false, args: ['--disable-blink-features=AutomationControlled'], ignoreDefaultArgs: ['--enable-automation'] });
 const ctx = await browser.newContext({ storageState: join(__dirname, 'udemy-auth.json'), userAgent: UA });
 await ctx.addInitScript(() => Object.defineProperty(navigator, 'webdriver', { get: () => undefined }));
 const page = await ctx.newPage();
 await minimizeWindow(ctx, page);
+await page.goto('https://www.udemy.com/instructor/courses/', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+await page.waitForFunction(() => /csrftoken=/.test(document.cookie), { timeout: 25000 }).catch(() => {});
+await sleep(2500);
+{
+  const live = await page.evaluate(async () => {
+    const out = []; let url = 'https://www.udemy.com/api-2.0/users/me/taught-courses/?page_size=100&fields[course]=id,published_title,title';
+    while (url) {
+      const r = await fetch(url, { credentials: 'include', headers: { Accept: 'application/json' } });
+      if (!r.ok) break;
+      const d = await r.json();
+      for (const c of d.results || []) if (c.id) out.push({ real_course_id: c.id, slug: c.published_title, title: c.title });
+      url = d.next;
+    }
+    return out;
+  }).catch(() => []);
+  if (live.length >= courses.length) courses = live.sort((a, b) => String(a.title).localeCompare(String(b.title)));
+  else console.log(`⚠️  live list returned ${live.length} (< ${courses.length} in the table) — keeping the table`);
+}
+if (ONLY.length) {
+  courses = courses.filter((c) => ONLY.includes(String(c.real_course_id)) || ONLY.includes(c.slug));
+}
+console.log(`${DRY ? '[DRY RUN] ' : ''}code=${DISCOUNT_CODE} · courses=${courses.length}`);
 
 mkdirSync(join(__dirname, 'bonus-lecture-backups'), { recursive: true });
 const results = []; const backups = [];

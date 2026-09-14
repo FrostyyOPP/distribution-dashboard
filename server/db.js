@@ -238,6 +238,30 @@ db.exec(`
     updated_at TEXT NOT NULL
   );
 
+  -- Month-by-month snapshot of each course's headline numbers.
+  --
+  -- Why this exists: coursera_metrics is REPLACED on every scrape, so it only
+  -- ever holds today's rating and enrollment. That makes "how did this course's
+  -- rating move since last month" unanswerable — the previous value is gone the
+  -- moment a scrape runs. This table appends one row per course per month
+  -- instead, so the history accumulates.
+  --
+  -- Keyed on (catalog, course_name, month): re-running in the same month
+  -- overwrites that month's row rather than adding a duplicate, so it is safe
+  -- to run daily — the last run of a month is the one that stands.
+  CREATE TABLE IF NOT EXISTS coursera_rating_history (
+    catalog TEXT NOT NULL,             -- 'starweaver' | 'cin'
+    course_name TEXT NOT NULL,
+    month TEXT NOT NULL,               -- 'YYYY-MM'
+    rating REAL,
+    enrollments INTEGER,
+    paid_enrollments INTEGER,
+    completions INTEGER,
+    completion_rate REAL,
+    captured_at TEXT NOT NULL,
+    PRIMARY KEY (catalog, course_name, month)
+  );
+
   -- A handful of real learner reviews per course (text + rating), separate
   -- from the aggregate rating column in coursera_metrics since it's one-to-many.
   -- Fetched via Coursera's feedback.v1 API, keyed by slug (needs
@@ -352,6 +376,10 @@ db.exec(`
     code TEXT,
     category TEXT,
     status TEXT,
+    -- FutureLearn shows a run state AND a visibility flag in one cell; an
+    -- "In progress" course that is Private is not publicly enrollable, so the
+    -- two are stored separately rather than as one concatenated string.
+    visibility TEXT,
     start_date TEXT,
     wishlist_count INTEGER,
     enrollment INTEGER,
@@ -1207,8 +1235,8 @@ export function readCourseraCinOverview() {
 
 // --- FutureLearn courses (guarded snapshot, + a merge-style enrollment update) ---
 const insertFutureLearnCourseStmt = db.prepare(
-  `INSERT INTO futurelearn_courses (slug, title, code, category, status, start_date, wishlist_count, enrollment, updated_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  `INSERT INTO futurelearn_courses (slug, title, code, category, status, visibility, start_date, wishlist_count, enrollment, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 );
 export function writeFutureLearnCourses(courses) {
   const ts = nowIso();
@@ -1221,6 +1249,7 @@ export function writeFutureLearnCourses(courses) {
     'futurelearn_courses', courses,
     (c) => insertFutureLearnCourseStmt.run(
       c.slug, c.title, c.code ?? null, c.category ?? null, c.status ?? null,
+      c.visibility ?? null,
       c.startDate ?? null, c.wishlistCount ?? null, existingEnrollment[c.slug] ?? null, ts
     ),
     { job: 'futurelearn_courses' }
@@ -1336,7 +1365,7 @@ const ALL_TABLES = [
   'coupons', 'coupon_quota', 'udemy_real_course_ids', 'transcripts', 'coursera_courses', 'coursera_metrics', 'coursera_overview_kpis', 'coursera_course_instructors',
   'coursera_course_status', 'coursera_reviews', 'coursera_cin_reviews', 'coursera_revenue_import',
   'coursera_revenue_quarterly', 'coursera_course_items', 'coursera_instructor_profiles',
-  'coursera_cin_courses', 'coursera_cin_metrics', 'coursera_cin_overview_kpis',
+  'coursera_cin_courses', 'coursera_cin_metrics', 'coursera_cin_overview_kpis', 'coursera_rating_history',
   'futurelearn_courses', 'go1_courses', 'go1_course_history', 'engagement_course', 'engagement_monthly', 'engagement_meta', 'engagement_ub_monthly',
   'engagement_course_monthly',
 ];
@@ -1344,6 +1373,7 @@ const ALL_TABLES = [
 const TIMESTAMP_COLUMN_OVERRIDES = {
   coursera_revenue_import: 'imported_at',
   coursera_revenue_quarterly: 'imported_at',
+  coursera_rating_history: 'captured_at',
 };
 export function latestUpdatedAt() {
   let newest = null;
@@ -1359,3 +1389,63 @@ export function recentScrapeRuns(limit = 20) {
 }
 
 export { db };
+
+// ---- Coursera rating history -------------------------------------------------
+// Appends this month's snapshot for every course currently in coursera_metrics
+// and coursera_cin_metrics. Never deletes: an upsert on (catalog, course, month)
+// so running it repeatedly in a month just refreshes that month's value.
+const insertRatingHistoryStmt = db.prepare(
+  `INSERT INTO coursera_rating_history
+     (catalog, course_name, month, rating, enrollments, paid_enrollments, completions, completion_rate, captured_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(catalog, course_name, month) DO UPDATE SET
+     rating = excluded.rating,
+     enrollments = excluded.enrollments,
+     paid_enrollments = excluded.paid_enrollments,
+     completions = excluded.completions,
+     completion_rate = excluded.completion_rate,
+     captured_at = excluded.captured_at`
+);
+
+// opts: { month: 'YYYY-MM', catalogs: ['starweaver'] }
+// Defaults to the Starweaver catalogue only — that is the side being tracked
+// month to month. Pass catalogs explicitly to include CIN.
+export function snapshotCourseraRatings(opts = {}) {
+  const { month, catalogs = ['starweaver'] } = typeof opts === 'string' ? { month: opts } : opts;
+  const ts = new Date().toISOString();
+  const m = month || ts.slice(0, 7);
+  const sources = [
+    ['starweaver', 'coursera_metrics'],
+    ['cin', 'coursera_cin_metrics'],
+  ].filter(([c]) => catalogs.includes(c));
+  let written = 0;
+  const run = db.transaction(() => {
+    for (const [catalog, table] of sources) {
+      const rows = db.prepare(
+        `SELECT course_name, rating, enrollments, paid_enrollments, completions, completion_rate FROM ${table}`
+      ).all();
+      for (const r of rows) {
+        insertRatingHistoryStmt.run(catalog, r.course_name, m, r.rating, r.enrollments,
+          r.paid_enrollments, r.completions, r.completion_rate, ts);
+        written++;
+      }
+    }
+  });
+  run();
+  return { month: m, written };
+}
+
+// Rating for each course in two given months, side by side.
+export function readCourseraRatingComparison(monthA, monthB) {
+  return db.prepare(
+    `SELECT catalog, course_name,
+            MAX(CASE WHEN month = ? THEN rating END)      AS rating_a,
+            MAX(CASE WHEN month = ? THEN rating END)      AS rating_b,
+            MAX(CASE WHEN month = ? THEN enrollments END) AS enrollments_a,
+            MAX(CASE WHEN month = ? THEN enrollments END) AS enrollments_b
+       FROM coursera_rating_history
+      WHERE month IN (?, ?)
+      GROUP BY catalog, course_name
+      ORDER BY catalog, course_name`
+  ).all(monthA, monthB, monthA, monthB, monthA, monthB);
+}

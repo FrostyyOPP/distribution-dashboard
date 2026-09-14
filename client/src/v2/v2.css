@@ -1,5 +1,5 @@
 /* =========================================================
-   Redesign (v2) — "Instructor Hub" visual system: deep navy
+   Redesign (v2) — "Distribution Dashboard" visual system: deep navy
    sidebar, cobalt-blue accent, IBM Plex Sans/Mono + Space
    Grotesk display type. Every rule is scoped under .dcx so it
    can never affect anything outside this app shell.
@@ -12,7 +12,7 @@
   --coursera: #0066cc;
   --coursera-light: #cce5ff;
 
-  /* Core palette (from the Instructor Hub design) */
+  /* Core palette (from the Distribution Dashboard design) */
   --navy-900: #0a1a3f;
   --navy-950: #071230;
   --blue-600: #002fa7;

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starweaver Dashboards</title>
+<style>
+  :root{
+    --ground:#f6f8fb; --surface:#ffffff; --ink:#0f327e; --ink-body:#3d4d70;
+    --ink-quiet:#6b7a99; --rule:#e2e7f0; --accent:#1976d2; --accent-2:#25a8d9;
+    --shadow:0 1px 2px rgba(15,50,126,.06), 0 8px 24px rgba(15,50,126,.08);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --ground:#0d1424; --surface:#131c30; --ink:#e8eefc; --ink-body:#aebbd6;
+           --ink-quiet:#7c8bab; --rule:#22304d;
+           --shadow:0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35); }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:var(--ground);color:var(--ink-body);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px 20px}
+  header{text-align:center;margin-bottom:38px}
+  .mark{display:inline-flex;align-items:center;gap:9px;font-weight:600;letter-spacing:.02em;
+    color:var(--ink);font-size:15px;margin-bottom:14px}
+  .dot{width:9px;height:9px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent-2))}
+  h1{margin:0 0 8px;font-size:30px;line-height:1.2;color:var(--ink);font-weight:650;letter-spacing:-.015em}
+  .sub{margin:0;color:var(--ink-quiet);font-size:15px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:20px;
+    width:100%;max-width:760px}
+  .card{display:flex;flex-direction:column;background:var(--surface);border:1px solid var(--rule);
+    border-radius:14px;padding:26px 24px 22px;text-decoration:none;color:inherit;
+    box-shadow:var(--shadow);transition:transform .16s ease, box-shadow .16s ease, border-color .16s ease}
+  .card:hover,.card:focus-visible{transform:translateY(-3px);border-color:var(--accent);
+    box-shadow:0 2px 4px rgba(15,50,126,.08), 0 14px 34px rgba(15,50,126,.14);outline:none}
+  .icon{width:42px;height:42px;border-radius:11px;display:grid;place-items:center;margin-bottom:16px;
+    background:linear-gradient(135deg,var(--accent),var(--accent-2))}
+  .icon svg{width:21px;height:21px;stroke:#fff;fill:none;stroke-width:2;
+    stroke-linecap:round;stroke-linejoin:round}
+  .card h2{margin:0 0 7px;font-size:18px;color:var(--ink);font-weight:620;letter-spacing:-.01em}
+  .card p{margin:0 0 18px;font-size:14px;color:var(--ink-quiet);flex:1}
+  .go{display:inline-flex;align-items:center;gap:6px;font-size:14px;font-weight:600;color:var(--accent)}
+  .go svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;
+    stroke-linecap:round;stroke-linejoin:round;transition:transform .16s ease}
+  .card:hover .go svg{transform:translateX(3px)}
+  footer{margin-top:34px;font-size:12.5px;color:var(--ink-quiet)}
+</style>
+</head>
+<body>
+  <header>
+    <div class="mark"><span class="dot"></span> STARWEAVER</div>
+    <h1>Dashboards</h1>
+    <p class="sub">Pick where you want to go.</p>
+  </header>
+
+  <main class="grid">
+    <a class="card" href="/distribution-dashboard">
+      <div class="icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/></svg>
+      </div>
+      <h2>Distribution Dashboard</h2>
+      <p>Courses, enrollments, earnings, minutes taught, captions and coupons across Udemy, Coursera, FutureLearn and Go1.</p>
+      <span class="go">Open <svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg></span>
+    </a>
+
+    <a class="card" href="/marketing-dashboard">
+      <div class="icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M3 11l18-6-6 18-2.5-7.5L3 11z"/></svg>
+      </div>
+      <h2>Marketing Dashboard</h2>
+      <p>The live course catalog — what is published right now, its public link, and the SWO/LPS parent course it belongs to.</p>
+      <span class="go">Open <svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg></span>
+    </a>
+  </main>
+
+  <footer>Starweaver · internal</footer>
+</body>
+</html>

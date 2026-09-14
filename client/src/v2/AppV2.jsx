@@ -97,7 +97,7 @@ export default function AppV2() {
     <div className={'dcx' + (dark ? ' dark' : '')}>
       <div className="dashboard">
         <aside className={'sidebar' + (sideOpen ? ' open' : '')}>
-          <div className="logo"><span className="dot" /> Instructor Hub</div>
+          <div className="logo"><span className="dot" /> Distribution Dashboard</div>
           <div className="nav-section">
             <div className="nav-label">Main</div>
             {NAV.map(([k, l]) => (

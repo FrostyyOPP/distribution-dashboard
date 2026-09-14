@@ -1,5 +1,5 @@
 {
-  "name": "udemy-dashboard-server",
+  "name": "distribution-dashboard-server",
   "version": "1.0.0",
   "description": "Backend proxy for the Udemy Instructor API",
   "type": "module",

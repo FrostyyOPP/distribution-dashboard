@@ -62,6 +62,20 @@ for (const [name, file, platform] of STEPS) {
   results.push({ name, ok: code === 0, secs: Math.round((Date.now() - t) / 1000) });
 }
 
+// Ratings and enrollment are REPLACED by the scrapes above, so yesterday's
+// values are gone once they run. Snapshot them into coursera_rating_history
+// afterwards — that append-only table is the only thing that makes
+// month-over-month comparison possible. Upserts per month, so daily is fine.
+try {
+  const { snapshotCourseraRatings } = await import('./db.js');
+  const snap = snapshotCourseraRatings({ catalogs: ['starweaver'] });
+  console.log(`\n📸 Starweaver rating snapshot ${snap.month}: ${snap.written} course rows`);
+  results.push({ name: 'Coursera rating snapshot', ok: true, secs: 0 });
+} catch (e) {
+  console.log(`\n⚠️  rating snapshot failed: ${e.message}`);
+  results.push({ name: 'Coursera rating snapshot', ok: false, secs: 0 });
+}
+
 writeFileSync(join(__dirname, 'last-update.json'), JSON.stringify({ finishedAt: new Date().toISOString(), results }, null, 2));
 
 console.log('\n=== Summary ===');

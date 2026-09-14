@@ -1,4 +1,4 @@
-# QA Testing Flow — Instructor Hub Dashboard
+# QA Testing Flow — Distribution Dashboard
 
 A repeatable checklist for verifying the dashboard after any change. Run through this
 before considering a feature "done," and re-run the whole thing periodically (e.g.

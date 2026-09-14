@@ -56,3 +56,9 @@ server/_tmp_*
 # backups. Course data, not code; this repo is public.
 server/.thumb-resized/
 server/udemy-thumbnail-backups.json
+server/coursera-bio-backups.json
+
+# local editor backups
+*.bak
+*.bak-*
+*.bak[0-9]

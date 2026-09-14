@@ -85,7 +85,7 @@ app.use((req, res, next) => {
     const [u, p] = Buffer.from(encoded, 'base64').toString().split(':');
     if (u === AUTH_USER && p === AUTH_PASS) return next();
   }
-  res.set('WWW-Authenticate', 'Basic realm="Udemy Dashboard"');
+  res.set('WWW-Authenticate', 'Basic realm="Distribution Dashboard"');
   return res.status(401).send('Authentication required');
 });
 
@@ -212,11 +212,19 @@ app.get('/api/go1/connection', (req, res) => {
 
 app.post('/api/go1/connect', (req, res) => {
   const state = cookiesToState(req.body?.cookies ?? req.body);
-  const isGo1 = state.cookies.some((c) => /go1\.com$/.test(c.domain));
-  if (!state.cookies.length || !isGo1) {
+  // The scrapers read starweaver.mygo1.com (Content Studio). Cookies for
+  // go1.com or learn.go1.com are a DIFFERENT session and will land on the
+  // login page — but they end in "go1.com" too, so a loose check accepted them
+  // and the connection silently looked fine while every scrape failed.
+  const domains = [...new Set(state.cookies.map((c) => c.domain))];
+  const hasStudio = state.cookies.some((c) => /(^|\.)mygo1\.com$/.test(c.domain));
+  if (!state.cookies.length || !hasStudio) {
     return res.status(400).json({
-      error: 'That does not look like a go1.com cookie export. Export from your mygo1.com dashboard while signed in.',
+      error: 'No mygo1.com cookies in that export. Sign in at starweaver.mygo1.com '
+        + '(Content Studio) and export the cookies from THAT tab — an export taken on '
+        + 'go1.com or learn.go1.com is a different session and cannot read Insights.',
       cookieCount: state.cookies.length,
+      domainsSeen: domains,
     });
   }
   writeFileSync(GO1_AUTH_FILE, JSON.stringify(state, null, 2));
@@ -607,6 +615,33 @@ app.get('/bookmarklet', (req, res) => {
   else res.status(404).send('bookmarklet.html not found');
 });
 
+// --- Landing page + the two dashboards -----------------------------------
+// `/` is a small chooser; the Distribution Dashboard moves to a named path and
+// the Marketing Tool's generated catalog is served alongside it. These are
+// registered BEFORE the static/catch-all block below, which otherwise answers
+// every path with the React app.
+const MARKETING_DIST = process.env.MARKETING_DIST || join(__dirname, '..', '..', 'marketing-tool', 'dist');
+const MARKETING_HTML = join(MARKETING_DIST, 'catalog.html');
+
+app.get('/', (req, res) => res.sendFile(join(__dirname, 'home.html')));
+
+app.get(['/marketing-dashboard', '/marketing-dashboard/'], (req, res) => {
+  if (!existsSync(MARKETING_HTML)) {
+    return res.status(503).send(
+      '<p style="font:15px system-ui;padding:40px">The marketing catalog has not been built yet.<br>'
+      + 'Run <code>cd ~/marketing-tool &amp;&amp; npm run build:dashboard</code>, then reload.</p>');
+  }
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(MARKETING_HTML);
+});
+
+// the unmatched-courses workbook the marketing build also produces
+app.get('/marketing-dashboard/unmatched-courses.xlsx', (req, res) => {
+  const f = join(MARKETING_DIST, 'unmatched-courses.xlsx');
+  if (!existsSync(f)) return res.status(404).send('not built');
+  res.download(f);
+});
+
 // --- Serve the built frontend (production) -------------------------------
 // In prod the React build is served from the same origin, so the client's
 // relative /api calls work with no proxy.
@@ -633,5 +668,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Udemy dashboard API running on http://localhost:${PORT}`);
+  console.log(`Distribution Dashboard API running on http://localhost:${PORT}`);
 });

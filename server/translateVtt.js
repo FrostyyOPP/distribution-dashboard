@@ -19,7 +19,12 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const SRC_DIR = join(__dirname, 'caption-files');
+// Source language for the translation. Defaults to English; set SOURCE_LANG=es
+// (with SRC_DIR pointing at the Spanish downloads) to go Spanish -> English.
+const SOURCE_LANG = (process.env.SOURCE_LANG || 'en').toLowerCase();
+const SRC_DIR = process.env.SRC_DIR
+  ? join(__dirname, process.env.SRC_DIR)
+  : join(__dirname, SOURCE_LANG === 'en' ? 'caption-files' : `caption-files-src-${SOURCE_LANG}`);
 const ENGINE = (process.env.ENGINE || 'google').toLowerCase();
 const CONCURRENCY = Number(process.env.CONCURRENCY || 5);
 const ONLY_COURSE = process.env.COURSE || null;
@@ -28,6 +33,9 @@ const RAW_LANGS = (process.env.TARGET_LANGS || '').split(',').map((s) => s.trim(
 
 // language name -> ISO code (extend as needed); pass a code directly to skip the map
 const CODES = {
+  // English was only ever the SOURCE, so it was never in this map — needed now
+  // that Spanish-language courses are translated the other way.
+  english: 'en',
   hindi: 'hi', spanish: 'es', french: 'fr', german: 'de', arabic: 'ar', portuguese: 'pt',
   italian: 'it', russian: 'ru', japanese: 'ja', korean: 'ko', chinese: 'zh-CN',
   'simplified chinese': 'zh-CN', 'traditional chinese': 'zh-TW', dutch: 'nl', turkish: 'tr',
@@ -44,14 +52,14 @@ const LANGS = RAW_LANGS.map((name) => {
   if (!c) { console.error(`❌ Unknown language "${name}" — pass an ISO code (e.g. "hi") or add it to CODES.`); process.exit(1); }
   return { name, code: c };
 });
-if (!existsSync(SRC_DIR)) { console.error('❌ No caption-files/ yet — run `npm run captions:files` first.'); process.exit(1); }
+if (!existsSync(SRC_DIR)) { console.error('❌ No ${SRC_DIR} yet — run captions:files (with SRC_LOCALE set) first.'); process.exit(1); }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- engines: each exposes translateMany(texts, langName, langCode) -> string[] ----------
 async function googleOne(text, tl) {
   if (!text.trim()) return text;
-  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=${tl}&dt=t&q=${encodeURIComponent(text)}`;
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${SOURCE_LANG}&tl=${tl}&dt=t&q=${encodeURIComponent(text)}`;
   for (let a = 0; a < 4; a++) {
     try {
       const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
@@ -73,7 +81,7 @@ const googleEngine = { translateMany: (texts, _n, tl) => pool(texts, CONCURRENCY
 
 async function libreMany(texts, _n, code) {
   const url = (process.env.LIBRE_URL || 'http://localhost:5000').replace(/\/$/, '') + '/translate';
-  const body = { q: texts, source: 'en', target: code, format: 'text' };
+  const body = { q: texts, source: SOURCE_LANG, target: code, format: 'text' };
   if (process.env.LIBRE_KEY) body.api_key = process.env.LIBRE_KEY;
   const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!r.ok) throw new Error('LibreTranslate http ' + r.status + ' — is the server running at ' + url + '?');

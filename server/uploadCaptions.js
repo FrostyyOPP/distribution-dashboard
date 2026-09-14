@@ -128,20 +128,40 @@ async function uploadOne(vttText, filename, assetId) {
 }
 await page.evaluate((cid) => { window.__CID = cid; }, courseId);
 
-let ok = 0, failed = 0, attempts = 0;
+// Each file spends a few seconds uploading, then waits up to 50s (25 polls x 2s)
+// for Udemy to finish publishing. Run one at a time, that idle wait IS the
+// runtime (~1 min/lecture). The waits are independent, so overlap them.
+// Work order no longer matters; results print in file order at the end.
+const CONCURRENCY = Number(process.env.UPLOAD_CONCURRENCY || 6);
+const queue = [];
 for (const file of files) {
-  if (attempts >= MAX) break;
+  if (queue.length >= MAX) break;
   const idx = parseInt(file.slice(0, 3), 10);          // NNN prefix -> 1-based lecture index
   const lec = lectures[idx - 1];
-  const title = file.replace(/^\d+-/, '');             // human filename (…​.vtt)
-  if (!lec) { console.log(`  ? ${file} → no lecture at index ${idx} (skip)`); continue; }
-  attempts++;
-  console.log(`  ${file}  →  lecture "${(lec.title || '').slice(0, 40)}"  asset ${lec.assetId}`);
-  if (DRY) { ok++; continue; }
-  const res = await uploadOne(readFileSync(join(srcDir, file), 'utf8'), title, lec.assetId);
-  if (res.step === 'done' && res.published_caption_id) { console.log(`     ✅ published caption ${res.published_caption_id}`); ok++; }
-  else { console.log(`     ✗ failed at ${res.step} (status ${res.status})  sigKeys=${JSON.stringify(res.sigKeys || [])}`); if (res.step !== 's3') console.log('      ', JSON.stringify(res).slice(0, 300)); failed++; }
-  await sleep(500);
+  if (!lec) { console.log(`  ? ${file} -> no lecture at index ${idx} (skip)`); continue; }
+  queue.push({ file, lec, title: file.replace(/^\d+-/, '') });
 }
+console.log(`  ${queue.length} file(s)${DRY ? ' (dry run)' : `, ${CONCURRENCY} at a time`}\n`);
+
+let ok = 0, failed = 0, finished = 0, cursor = 0;
+const out = new Array(queue.length);
+async function worker() {
+  for (;;) {
+    const k = cursor++;
+    if (k >= queue.length) return;
+    const { file, lec, title } = queue[k];
+    if (DRY) { out[k] = `  ${file}  ->  lecture "${(lec.title || '').slice(0, 40)}"  asset ${lec.assetId}`; ok++; continue; }
+    const res = await uploadOne(readFileSync(join(srcDir, file), 'utf8'), title, lec.assetId)
+      .catch((e) => ({ step: 'threw', status: String(e.message).slice(0, 80) }));
+    let line = `  ${file}  ->  asset ${lec.assetId}\n`;
+    if (res.step === 'done' && res.published_caption_id) { line += `     published caption ${res.published_caption_id}`; ok++; }
+    else { line += `     FAILED at ${res.step} (status ${res.status})`; failed++; }
+    out[k] = line;
+    finished++;
+    if (finished % 5 === 0 || finished === queue.length) console.log(`     ... ${finished}/${queue.length} (${ok} ok, ${failed} failed)`);
+  }
+}
+await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker));
+out.filter(Boolean).forEach((l) => console.log(l));
 console.log(`\n${DRY ? 'DRY RUN mapped' : 'Uploaded'} ${ok} file(s)${failed ? `, ${failed} failed` : ''}.`);
 await browser.close();
