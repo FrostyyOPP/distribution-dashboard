@@ -28,6 +28,7 @@
     "discover": "node discover.js",
     "futurelearn:discover": "node discoverFutureLearn.js",
     "futurelearn:courses": "node scrapeFutureLearnCourses.js",
+    "linkedin:courses": "node scrapeLinkedInCourses.js",
     "futurelearn:enrollment": "node scrapeFutureLearnEnrollment.js",
     "go1:discover": "node discoverGo1.js",
     "go1:courses": "node scrapeGo1Courses.js",

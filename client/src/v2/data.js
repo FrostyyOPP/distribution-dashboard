@@ -288,6 +288,14 @@ export function exportFutureLearnCsv(rows) {
   downloadCsv(`futurelearn-courses-${new Date().toISOString().slice(0, 10)}.csv`, headers, data);
 }
 
+export function exportLinkedInCsv(rows) {
+  const headers = ['Course', 'Language', 'Learners', 'Shares', 'Likes', 'Last Updated'];
+  const data = rows.map((c) => [
+    c.title, c.language || '', c.learners ?? '', c.shares ?? '', c.likes ?? '', c.lastUpdated || '',
+  ]);
+  downloadCsv(`linkedin-learning-courses-${new Date().toISOString().slice(0, 10)}.csv`, headers, data);
+}
+
 export function exportGo1Csv(rows) {
   const headers = ['Course', 'Enrolments', 'Completions', 'Total Minutes', 'Avg Session'];
   const data = rows.map((c) => [

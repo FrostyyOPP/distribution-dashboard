@@ -227,3 +227,16 @@
   .dcx .page-header { flex-direction: column; align-items: flex-start; }
   .dcx th, .dcx td { padding: 12px 14px; }
 }
+
+/* Last-update run status: a failed daily run used to be invisible — the guards
+   refused the bad writes, timestamps stayed old, and the sidebar read normally. */
+.dcx .run-warn { margin-top: 6px; color: #fca5a5; font-weight: 600; cursor: pointer; line-height: 1.35; }
+.dcx .run-warn:hover { color: #fecaca; text-decoration: underline; }
+.dcx .run-steps { display: flex; flex-direction: column; gap: 4px; }
+.dcx .run-step { display: grid; grid-template-columns: 16px 1fr auto; gap: 8px; align-items: center;
+  font-size: 13px; padding: 5px 8px; border-radius: 6px; background: var(--n50); }
+.dcx .run-step.bad { background: #fef2f2; color: #b91c1c; }
+.dcx .run-step.skip { opacity: .6; }
+.dcx .run-step .rs-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dcx.dark .run-step { background: #101b38; }
+.dcx.dark .run-step.bad { background: #3b1218; color: #fca5a5; }

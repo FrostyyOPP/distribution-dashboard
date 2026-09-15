@@ -386,6 +386,57 @@ db.exec(`
     updated_at TEXT NOT NULL
   );
 
+  -- LinkedIn Learning, published under "Starweaver Group, Inc. Licensor".
+  --
+  -- The instructor portal's all-courses table is the only place that lists
+  -- every course at once, and it exposes just these fields — there is no watch
+  -- time, completion rate or demographic data at this level. Those live on each
+  -- course's own Analytics page, one page per course, so they are deliberately
+  -- not modelled here.
+  --
+  -- Keyed on the title because the portal exposes no course id or slug in the
+  -- table view.
+  CREATE TABLE IF NOT EXISTS linkedin_courses (
+    title TEXT PRIMARY KEY,
+    language TEXT,
+    learners INTEGER,
+    shares INTEGER,
+    likes INTEGER,
+    last_updated TEXT,
+    updated_at TEXT NOT NULL
+  );
+
+  -- LinkedIn Learning royalty statements, one row per course per period.
+  --
+  -- Columns mirror the statements table at
+  --   /learning/instructor-portal/payments/statements?instructorUrn=...
+  -- which reports a single "selected period" at a time, so the scraper walks
+  -- the period picker and appends. Keyed on (course_id, period) so re-running a
+  -- month refreshes it rather than duplicating.
+  --
+  -- earnings_to_date is a running lifetime figure, NOT a per-period value —
+  -- summing it across periods would multiply the real total.
+  CREATE TABLE IF NOT EXISTS linkedin_revenue (
+    course_id TEXT NOT NULL,
+    period TEXT NOT NULL,              -- 'YYYY-MM'
+    course_name TEXT,
+    payment REAL,                      -- paid for the selected period
+    earnings REAL,                     -- earned in the selected period
+    royalty_earnings REAL,
+    earnings_prev_period REAL,
+    earnings_to_date REAL,             -- lifetime running total, do not sum
+    alacarte_earnings REAL,
+    alacarte_units INTEGER,
+    grants REAL,
+    advance_remaining REAL,
+    advances_total REAL,
+    royalty_pct REAL,
+    release_date TEXT,
+    languages TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (course_id, period)
+  );
+
   CREATE TABLE IF NOT EXISTS go1_course_history (
     course_name TEXT NOT NULL,
     month TEXT NOT NULL,
@@ -1366,6 +1417,7 @@ const ALL_TABLES = [
   'coursera_course_status', 'coursera_reviews', 'coursera_cin_reviews', 'coursera_revenue_import',
   'coursera_revenue_quarterly', 'coursera_course_items', 'coursera_instructor_profiles',
   'coursera_cin_courses', 'coursera_cin_metrics', 'coursera_cin_overview_kpis', 'coursera_rating_history',
+  'linkedin_courses', 'linkedin_revenue',
   'futurelearn_courses', 'go1_courses', 'go1_course_history', 'engagement_course', 'engagement_monthly', 'engagement_meta', 'engagement_ub_monthly',
   'engagement_course_monthly',
 ];
@@ -1448,4 +1500,153 @@ export function readCourseraRatingComparison(monthA, monthB) {
       GROUP BY catalog, course_name
       ORDER BY catalog, course_name`
   ).all(monthA, monthB, monthA, monthB, monthA, monthB);
+}
+
+// --- LinkedIn Learning courses --------------------------------------------
+const insertLinkedInCourseStmt = db.prepare(
+  `INSERT INTO linkedin_courses (title, language, learners, shares, likes, last_updated, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?)`
+);
+export function writeLinkedInCourses(courses) {
+  const ts = nowIso();
+  return guardedReplaceAll(
+    'linkedin_courses', 'linkedin_revenue', courses,
+    (c) => insertLinkedInCourseStmt.run(
+      c.title, c.language ?? null, c.learners ?? null, c.shares ?? null,
+      c.likes ?? null, c.lastUpdated ?? null, ts
+    ),
+    { job: 'linkedin_courses' }
+  );
+}
+export function readLinkedInCourses() {
+  const courses = db.prepare('SELECT * FROM linkedin_courses ORDER BY learners DESC').all().map((r) => ({
+    title: r.title, language: r.language, learners: r.learners,
+    shares: r.shares, likes: r.likes, lastUpdated: r.last_updated,
+  }));
+  const scrapedAt = db.prepare('SELECT MAX(updated_at) AS t FROM linkedin_courses').get().t;
+  const totals = courses.reduce((a, c) => ({
+    learners: a.learners + (c.learners || 0),
+    shares: a.shares + (c.shares || 0),
+    likes: a.likes + (c.likes || 0),
+  }), { learners: 0, shares: 0, likes: 0 });
+  return { courses, totals, scrapedAt };
+}
+
+// --- LinkedIn Learning revenue (append-only per period) --------------------
+const insertLinkedInRevenueStmt = db.prepare(
+  `INSERT INTO linkedin_revenue
+     (course_id, period, course_name, payment, earnings, royalty_earnings, earnings_prev_period,
+      earnings_to_date, alacarte_earnings, alacarte_units, grants, advance_remaining,
+      advances_total, royalty_pct, release_date, languages, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(course_id, period) DO UPDATE SET
+     course_name = excluded.course_name, payment = excluded.payment, earnings = excluded.earnings,
+     royalty_earnings = excluded.royalty_earnings, earnings_prev_period = excluded.earnings_prev_period,
+     earnings_to_date = excluded.earnings_to_date, alacarte_earnings = excluded.alacarte_earnings,
+     alacarte_units = excluded.alacarte_units, grants = excluded.grants,
+     advance_remaining = excluded.advance_remaining, advances_total = excluded.advances_total,
+     royalty_pct = excluded.royalty_pct, release_date = excluded.release_date,
+     languages = excluded.languages, updated_at = excluded.updated_at`
+);
+// Upsert, never replace: each run covers only the periods it walked, and the
+// table is the accumulated history of every period ever scraped.
+export function writeLinkedInRevenue(rows) {
+  const ts = nowIso();
+  let n = 0;
+  const run = db.transaction(() => {
+    for (const r of rows) {
+      insertLinkedInRevenueStmt.run(
+        String(r.courseId), r.period, r.courseName ?? null,
+        r.payment ?? null, r.earnings ?? null, r.royaltyEarnings ?? null, r.earningsPrevPeriod ?? null,
+        r.earningsToDate ?? null, r.alacarteEarnings ?? null, r.alacarteUnits ?? null,
+        r.grants ?? null, r.advanceRemaining ?? null, r.advancesTotal ?? null,
+        r.royaltyPct ?? null, r.releaseDate ?? null, r.languages ?? null, ts,
+      );
+      n++;
+    }
+  });
+  run();
+  return { written: n };
+}
+
+export function readLinkedInRevenue() {
+  const rows = db.prepare('SELECT * FROM linkedin_revenue').all();
+  // Per-period totals. earnings_to_date is a lifetime running figure, so the
+  // lifetime total is the LATEST value per course, never a sum over periods.
+  const byPeriod = {};
+  for (const r of rows) {
+    const p = (byPeriod[r.period] ||= { period: r.period, earnings: 0, payment: 0, courses: 0 });
+    p.earnings += r.earnings || 0;
+    p.payment += r.payment || 0;
+    p.courses++;
+  }
+  const months = Object.values(byPeriod).sort((a, b) => a.period.localeCompare(b.period));
+  const latest = db.prepare(
+    `SELECT course_id, course_name, earnings_to_date, advance_remaining, royalty_pct, period
+       FROM linkedin_revenue r
+      WHERE period = (SELECT MAX(period) FROM linkedin_revenue WHERE course_id = r.course_id)`
+  ).all();
+  const lifetime = latest.reduce((a, r) => a + (r.earnings_to_date || 0), 0);
+  const scrapedAt = db.prepare('SELECT MAX(updated_at) AS t FROM linkedin_revenue').get().t;
+  return {
+    months,
+    courses: latest.map((r) => ({
+      courseId: r.course_id, courseName: r.course_name, earningsToDate: r.earnings_to_date,
+      advanceRemaining: r.advance_remaining, royaltyPct: r.royalty_pct, latestPeriod: r.period,
+    })),
+    lifetime,
+    periodCount: months.length,
+    scrapedAt,
+  };
+}
+
+// --- scrape freshness ------------------------------------------------------
+// Built on the scrape_runs table guardedReplaceAll already writes — job,
+// started_at, finished_at, ok, guarded, row_count, error. No second log.
+const insertRunStmt = db.prepare(
+  `INSERT INTO scrape_runs (job, started_at, finished_at, ok, guarded, row_count, error)
+   VALUES (?, ?, ?, ?, 0, ?, ?)`
+);
+// For scrapers that do not go through guardedReplaceAll (upserts, appends) so
+// their freshness is recorded the same way as everything else.
+export function logScrapeRun({ job, ok, rows = null, error = null, startedAt = null }) {
+  const now = nowIso();
+  insertRunStmt.run(job, startedAt || now, now, ok ? 1 : 0, rows, error);
+}
+
+// Hours since the last SUCCESSFUL run of a job. null = never run.
+// A scraper can use this to refuse to re-fetch something it pulled an hour ago,
+// which is what stops development runs from hammering a site.
+export function hoursSinceLastRun(job) {
+  const r = db.prepare(
+    'SELECT MAX(finished_at) AS t FROM scrape_runs WHERE job = ? AND ok = 1'
+  ).get(job);
+  if (!r || !r.t) return null;
+  return (Date.now() - Date.parse(r.t)) / 36e5;
+}
+
+// Last successful run per job — what the dashboard shows instead of guessing.
+export function readFreshness() {
+  return db.prepare(
+    `SELECT job, MAX(finished_at) AS lastOk, row_count AS rows
+       FROM scrape_runs WHERE ok = 1 GROUP BY job ORDER BY job`
+  ).all().map((r) => ({
+    job: r.job, lastOk: r.lastOk, rows: r.rows,
+    hoursAgo: r.lastOk ? Number(((Date.now() - Date.parse(r.lastOk)) / 36e5).toFixed(1)) : null,
+  }));
+}
+
+export function readScrapeRuns(limit = 50) {
+  return db.prepare(
+    'SELECT job, ok, row_count AS rows, error, finished_at FROM scrape_runs ORDER BY finished_at DESC LIMIT ?'
+  ).all(limit);
+}
+
+// Read-only passthrough used by the export endpoints. SELECT only — this exists
+// to dump whole tables, not to accept arbitrary statements from a request.
+export function rawQuery(sql) {
+  if (!/^\s*SELECT\s/i.test(sql) || /;/.test(sql.trim().replace(/;\s*$/, ''))) {
+    throw new Error('rawQuery accepts a single SELECT');
+  }
+  return db.prepare(sql).all();
 }

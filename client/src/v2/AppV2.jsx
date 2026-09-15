@@ -7,8 +7,9 @@ import ConnectUdemy from '../ConnectUdemy.jsx';
 import ConnectCoursera from '../ConnectCoursera.jsx';
 import ConnectFutureLearn from '../ConnectFutureLearn.jsx';
 import ConnectGo1 from '../ConnectGo1.jsx';
+import ConnectLinkedIn from '../ConnectLinkedIn.jsx';
 import { BarChart, Donut, Histogram, LineChart, ChartPlaceholder } from './charts.jsx';
-import { enrich, classifyDomain, DOMAIN_COLOR, capNames, usd, exportCsv, exportMinutesCsv, exportCourseraCsv, exportFutureLearnCsv, exportGo1Csv, exportWatchlistCsv, applyFilter, parseSmartQuery } from './data.js';
+import { enrich, classifyDomain, DOMAIN_COLOR, capNames, usd, exportCsv, exportMinutesCsv, exportCourseraCsv, exportFutureLearnCsv, exportLinkedInCsv, exportGo1Csv, exportWatchlistCsv, applyFilter, parseSmartQuery } from './data.js';
 
 const num = (n) => (n == null ? '—' : Math.round(n).toLocaleString());
 const relTime = (iso) => {
@@ -35,6 +36,16 @@ const ICONS = {
   coupons: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 9a3 3 0 1 0 0 6" /><path d="M22 9a3 3 0 1 1 0 6" /><rect x="2" y="6" width="20" height="12" rx="2" /><line x1="12" y1="6" x2="12" y2="18" strokeDasharray="2 2" /></svg>,
   settings: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>,
 };
+// LinkedIn Learning is still being built out, so its tab is hidden on the
+// public tunnel and shown only locally — or anywhere with ?linkedin in the URL,
+// which is how to demo it without publishing it. Remove this once it is ready.
+const SHOW_LINKEDIN = (() => {
+  try {
+    if (new URLSearchParams(location.search).has('linkedin')) return true;
+    return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  } catch { return false; }
+})();
+
 const NAV = [['overview', 'Overview'], ['watchlist', 'Watchlist'], ['courses', 'Courses'], ['earnings', 'Earnings'], ['minutes', 'Minutes'], ['captions', 'Captions'], ['coupons', 'Coupons']];
 
 export default function AppV2() {
@@ -45,10 +56,12 @@ export default function AppV2() {
   const [courseraReviews, setCourseraReviews] = useState({});
   const [courseraCinReviews, setCourseraCinReviews] = useState({});
   const [futurelearn, setFuturelearn] = useState([]);
+  const [linkedin, setLinkedin] = useState({ courses: [], totals: { learners: 0, shares: 0, likes: 0 } });
   const [go1, setGo1] = useState({ courses: [], month: null });
   const [go1Lifetime, setGo1Lifetime] = useState({ courses: [], firstMonth: null, lastMonth: null, monthCount: 0 });
   const [conn, setConn] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
+  const [lastRun, setLastRun] = useState(null);
   const [view, setView] = useState('overview');
   const [platform, setPlatform] = useState('all');
   const [selected, setSelected] = useState(null);
@@ -70,7 +83,7 @@ export default function AppV2() {
   const load = () => {
     fetch('/api/courses').then((r) => r.json()).then(setRaw).catch(() => setRaw({ results: [] }));
     fetch('/api/connection').then((r) => r.json()).then(setConn).catch(() => {});
-    fetch('/api/last-update').then((r) => r.json()).then((d) => setLastUpdate(d.updatedAt)).catch(() => {});
+    fetch('/api/last-update').then((r) => r.json()).then((d) => { setLastUpdate(d.updatedAt); setLastRun(d.lastRun || null); }).catch(() => {});
     loadBookmarks();
     fetch('/api/coursera/metrics').then((r) => r.json()).then((d) => {
       setCoursera(d.courses || d.results || []);
@@ -81,6 +94,7 @@ export default function AppV2() {
     fetch('/api/coursera-cin/reviews').then((r) => r.json()).then((d) => setCourseraCinReviews(d.bySlug || {})).catch(() => {});
     fetch('/api/revenue/monthly').then((r) => r.json()).then((d) => setMonthly(d.monthly || [])).catch(() => {});
     fetch('/api/futurelearn/courses').then((r) => r.json()).then((d) => setFuturelearn(d.courses || [])).catch(() => {});
+    fetch('/api/linkedin/courses').then((r) => r.json()).then((d) => setLinkedin({ courses: d.courses || [], totals: d.totals || { learners: 0, shares: 0, likes: 0 } })).catch(() => {});
     fetch('/api/go1/courses').then((r) => r.json()).then((d) => setGo1({ courses: d.courses || [], month: d.month || null })).catch(() => {});
     fetch('/api/go1/lifetime').then((r) => r.json()).then((d) => setGo1Lifetime({ courses: d.courses || [], firstMonth: d.firstMonth || null, lastMonth: d.lastMonth || null, monthCount: d.monthCount || 0 })).catch(() => {});
     fetch('/api/engagement').then((r) => r.json()).then(setEngagement).catch(() => {});
@@ -90,6 +104,7 @@ export default function AppV2() {
   const udemy = useMemo(() => (raw?.results || []).filter((c) => c.is_published).map(enrich), [raw]);
   const totalRevenue = raw?.total_revenue ?? null;
 
+  const runFailures = ((lastRun && lastRun.results) || []).filter((r) => r.ok === false);
   if (!raw) return <div className="dcx"><div className="center-note">Loading your dashboard…</div></div>;
   const go = (v) => { setView(v); setSideOpen(false); };
 
@@ -108,17 +123,27 @@ export default function AppV2() {
             <div className="nav-label">Tools</div>
             <div className={'nav-item' + (view === 'settings' ? ' active' : '')} onClick={() => go('settings')}>{ICONS.settings}<span>Settings</span></div>
           </div>
-          <div className="side-foot">Last updated {relTime(lastUpdate)}</div>
+          <div className="side-foot">
+            Last updated {relTime(lastUpdate)}
+            {runFailures.length > 0 && (
+              /* A run where most steps failed used to look identical to a clean
+                 one: the guards refused the bad writes, the timestamps stayed
+                 old, and the sidebar just said "4h ago". Say it out loud. */
+              <div className="run-warn" onClick={() => go('settings')} title={runFailures.map((r) => r.name).join(', ')}>
+                ⚠ {runFailures.length} step{runFailures.length > 1 ? 's' : ''} failed in the last update
+              </div>
+            )}
+          </div>
         </aside>
 
         <main className="main-content">
           <button className="btn btn-secondary menu-btn" style={{ marginBottom: 16 }} onClick={() => setSideOpen((o) => !o)}>☰ Menu</button>
           <div className="platform-tabs">
-            {[['all', 'All Platforms'], ['udemy', 'Udemy'], ['coursera', 'Coursera'], ['coursera_cin', 'Coursera CIN'], ['futurelearn', 'FutureLearn'], ['go1', 'Go1']].map(([k, l]) => (
+            {[['all', 'All Platforms'], ['udemy', 'Udemy'], ['coursera', 'Coursera'], ['coursera_cin', 'Coursera CIN'], ['futurelearn', 'FutureLearn'], ...(SHOW_LINKEDIN ? [['linkedin', 'LinkedIn']] : []), ['go1', 'Go1']].map(([k, l]) => (
               <button key={k} className={'ptab' + (platform === k ? ' active' : '') + (k === 'coursera' || k === 'coursera_cin' ? ' p-coursera' : '')} onClick={() => setPlatform(k)}>{l}</button>
             ))}
           </div>
-          {view === 'overview' && <Overview udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} go1={go1.courses} go1Lifetime={go1Lifetime} totalRevenue={totalRevenue} platform={platform} monthly={monthly} engagement={engagement} />}
+          {view === 'overview' && <Overview udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} linkedin={linkedin} go1={go1.courses} go1Lifetime={go1Lifetime} totalRevenue={totalRevenue} platform={platform} monthly={monthly} engagement={engagement} />}
           {view === 'watchlist' && <Watchlist bookmarks={bookmarks} udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} go1={go1Lifetime.courses.length ? go1Lifetime.courses : go1.courses} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} onOpen={setSelected} />}
           {view === 'courses' && (
             /* key by platform — both tabs render CourseraView, and without a
@@ -127,6 +152,7 @@ export default function AppV2() {
             platform === 'coursera' ? <CourseraView key="coursera" rows={coursera} quarters={courseraQuarters} reviewsBySlug={courseraReviews} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'coursera_cin' ? <CourseraView key="coursera_cin" rows={courseraCin} label="Coursera CIN" showInstructorCheck={false} reviewsBySlug={courseraCinReviews} platform="coursera_cin" isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'futurelearn' ? <FutureLearnView rows={futurelearn} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
+            : platform === 'linkedin' ? <LinkedInView data={linkedin} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'go1' ? <Go1View rows={go1.courses} month={go1.month} lifetime={go1Lifetime} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : <Courses udemy={udemy} totalRevenue={totalRevenue} onOpen={setSelected} onRefresh={load} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
           )}
@@ -138,17 +164,19 @@ export default function AppV2() {
             ? <PlatformUnavailable platform={platform} title="Earnings" note="FutureLearn doesn't expose partner revenue — earnings tracking is Udemy-only." />
             : platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Earnings" note="Your Go1 account doesn't have revenue reporting available yet — earnings tracking is Udemy-only." />
+            : platform === 'linkedin'
+            ? <PlatformUnavailable platform={platform} title="Earnings" note="The LinkedIn Learning instructor portal exposes no revenue at all — only learners, shares and likes." />
             : <Earnings udemy={udemy} totalRevenue={totalRevenue} monthly={monthly} platform={platform} coursera={coursera} />)}
-          {view === 'minutes' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'go1'
+          {view === 'minutes' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Minutes" note="Minutes-consumed tracking is a Udemy feature — this platform's courses aren't covered here." />
             : <MinutesReport udemy={udemy} />)}
-          {view === 'captions' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'go1'
+          {view === 'captions' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Captions" note="Caption localization is a Udemy feature — this platform's courses aren't covered here." />
             : <Captions udemy={udemy} onRefresh={load} />)}
-          {view === 'coupons' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'go1'
+          {view === 'coupons' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Coupons" note="Coupon tracking is a Udemy feature — this platform doesn't have promotional codes tracked here." />
             : <Coupons udemy={udemy} />)}
-          {view === 'settings' && <Settings conn={conn} dark={dark} setDark={setDark} lastUpdate={lastUpdate} onRefresh={load} />}
+          {view === 'settings' && <Settings conn={conn} dark={dark} setDark={setDark} lastUpdate={lastUpdate} lastRun={lastRun} onRefresh={load} />}
         </main>
       </div>
       {selected && <CourseDetail course={selected} onClose={() => setSelected(null)} />}
@@ -159,11 +187,12 @@ export default function AppV2() {
 // ---------------- Overview ----------------
 const coursraPct = (c) => { const v = c.completionRate; return v == null ? null : (v <= 1 ? v * 100 : v); };
 
-function Overview({ udemy, coursera, courseraCin, futurelearn, go1, go1Lifetime, totalRevenue, platform, monthly, engagement }) {
+function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go1Lifetime, totalRevenue, platform, monthly, engagement }) {
   const isUdemy = platform === 'udemy';
   const isCoursera = platform === 'coursera';
   const isCourseraCin = platform === 'coursera_cin';
   const isFutureLearn = platform === 'futurelearn';
+  const isLinkedIn = platform === 'linkedin';
   const isGo1 = platform === 'go1';
   const isAll = platform === 'all';
 
@@ -196,18 +225,24 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, go1, go1Lifetime,
   const uAvg = rated.length ? rated.reduce((s, c) => s + Number(c.rating) * (c.num_reviews || 1), 0) / rated.reduce((s, c) => s + (c.num_reviews || 1), 0) : 0;
   const cAvg = cRated.length ? cRated.reduce((s, c) => s + Number(c.rating), 0) / cRated.length : 0;
   const cCinAvg = cCinRated.length ? cCinRated.reduce((s, c) => s + Number(c.rating), 0) / cCinRated.length : 0;
-  const courses = isUdemy ? udemy.length : isCoursera ? courStats.count : isCourseraCin ? courCinStats.count : isFutureLearn ? flStats.count : isGo1 ? go1Stats.count
+  // LinkedIn Learning: the portal reports learners, shares and likes and
+  // nothing else — no ratings, no revenue, no minutes.
+  const liRows = (linkedin && linkedin.courses) || [];
+  const liTotals = (linkedin && linkedin.totals) || { learners: 0, shares: 0, likes: 0 };
+  const liStats = { count: liRows.length, enroll: liTotals.learners || 0 };
+  const courses = isUdemy ? udemy.length : isCoursera ? courStats.count : isCourseraCin ? courCinStats.count : isFutureLearn ? flStats.count : isLinkedIn ? liStats.count : isGo1 ? go1Stats.count
     : udemy.length + courStats.count + flStats.count + go1Stats.count;
-  const enroll = isUdemy ? uEnroll : isCoursera ? courStats.enroll : isCourseraCin ? courCinStats.enroll : isFutureLearn ? flStats.enroll : isGo1 ? go1Stats.enroll
+  const enroll = isUdemy ? uEnroll : isCoursera ? courStats.enroll : isCourseraCin ? courCinStats.enroll : isFutureLearn ? flStats.enroll : isLinkedIn ? liStats.enroll : isGo1 ? go1Stats.enroll
     : uEnroll + courStats.enroll + flStats.enroll + go1Stats.enroll;
   const withPaul = udemy.filter((c) => c.hasPaul).length;
   const finGap = udemy.filter((c) => c.isFinance && !c.hasGlobecon).length;
   const ubCount = udemy.filter((c) => c.is_udemy_business).length;
   const minutesWatched = engagement.totalMinutes != null ? Math.round(engagement.totalMinutes) : null;
 
-  const ratingValue = isCoursera ? cAvg : isCourseraCin ? cCinAvg : (isFutureLearn || isGo1) ? null : uAvg;
+  const ratingValue = isCoursera ? cAvg : isCourseraCin ? cCinAvg : (isFutureLearn || isGo1 || isLinkedIn) ? null : uAvg;
   const ratingTrend = isCoursera ? `across ${cRated.length} rated courses` : isCourseraCin ? `across ${cCinRated.length} rated courses`
     : isFutureLearn ? 'not offered by FutureLearn' : isGo1 ? 'not offered by Go1'
+    : isLinkedIn ? 'not exposed by the instructor portal'
     : isAll ? `Udemy only — based on ${num(reviews)} reviews` : `based on ${num(reviews)} reviews`;
   // Real per-course revenue, manually imported from partner revenue reports
   // (Coursera exposes none via any API) — covers only the courses present in
@@ -218,17 +253,33 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, go1, go1Lifetime,
   const courseraCinRevenueCount = courseraCin.filter((c) => c.revenue != null).length;
   const revenueValue = isCoursera ? (courseraRevenueCount ? usd(courseraRevenueTotal) : '—')
     : isCourseraCin ? (courseraCinRevenueCount ? usd(courseraCinRevenueTotal) : '—')
-    : (isFutureLearn || isGo1) ? '—'
+    : (isFutureLearn || isGo1 || isLinkedIn) ? '—'
     : isAll ? ((totalRevenue == null && !courseraRevenueCount) ? '—' : usd((totalRevenue || 0) + courseraRevenueTotal))
     : (totalRevenue == null ? '—' : usd(totalRevenue));
   const revenueTrend = isCoursera ? (courseraRevenueCount ? `from manually imported report — ${courseraRevenueCount}/${coursera.length} courses` : 'not tracked for Coursera')
     : isCourseraCin ? (courseraCinRevenueCount ? `from manually imported report — ${courseraCinRevenueCount}/${courseraCin.length} courses` : 'not tracked for Coursera CIN')
     : isFutureLearn ? 'not exposed to partners' : isGo1 ? 'not yet available'
+    : isLinkedIn ? 'no revenue in the instructor portal'
     : isAll ? `Udemy + Coursera (${courseraRevenueCount}/${coursera.length} courses) — FutureLearn/Go1 not tracked`
     : 'Udemy earnings';
 
   let charts;
-  if (isFutureLearn) {
+  if (isLinkedIn) {
+    const top = [...liRows].sort((a, b) => (b.learners || 0) - (a.learners || 0)).slice(0, 8)
+      .map((c) => ({ label: c.title, value: c.learners || 0, color: '#0a66c2' }));
+    const byLang = {};
+    liRows.forEach((c) => { byLang[c.language || 'Unknown'] = (byLang[c.language || 'Unknown'] || 0) + 1; });
+    const langDonut = Object.entries(byLang).map(([label, value], i) =>
+      ({ label, value, color: ['#0a66c2', '#0c9bae', '#ea7112', '#002fa7', '#9ca3af'][i % 5] }));
+    charts = (
+      <div className="chart-grid">
+        <div className="chart-card"><div className="section-title">Top courses by learners</div>
+          {top.length ? <BarChart data={top} /> : <ChartPlaceholder />}</div>
+        <div className="chart-card"><div className="section-title">Courses by language</div>
+          {langDonut.length ? <Donut data={langDonut} /> : <ChartPlaceholder />}</div>
+      </div>
+    );
+  } else if (isFutureLearn) {
     const statusCounts = {};
     futurelearn.forEach((c) => { statusCounts[c.status || 'Unknown'] = (statusCounts[c.status || 'Unknown'] || 0) + 1; });
     const statusDonut = Object.entries(statusCounts).map(([label, value]) => ({ label, value, color: label === 'In progress' ? '#0c9bae' : label === 'Draft' ? '#ea7112' : '#002fa7' }));
@@ -713,6 +764,73 @@ function FutureLearnView({ rows, isBookmarked, toggleBookmark }) {
                 <td className="muted" style={{ fontSize: 13 }}>{c.startDate || '—'}</td>
                 <td style={{ textAlign: 'right' }}>{num(c.wishlistCount)}</td>
                 <td style={{ textAlign: 'right' }}>{c.enrollment != null ? num(c.enrollment) : <span className="muted">—</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      </div>
+    </>
+  );
+}
+
+// ---------------- LinkedIn Learning ----------------
+// The instructor portal's all-courses table is the only view that lists every
+// course at once, and it carries just these five fields. Watch time, completion
+// rate and demographics exist only on each course's own Analytics page, one page
+// per course, so they are absent here by nature rather than by omission.
+function LinkedInView({ data, isBookmarked, toggleBookmark }) {
+  const rows = data.courses || [];
+  const [sort, setSort] = useState({ key: 'learners', dir: -1 });
+  const [q, setQ] = useState('');
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return rows;
+    return rows.filter((c) => [c.title, c.language].some((v) => String(v || '').toLowerCase().includes(s)));
+  }, [rows, q]);
+  const sorted = useMemo(() => [...filtered].sort((a, b) => {
+    const av = a[sort.key], bv = b[sort.key];
+    if (sort.key === 'title' || sort.key === 'language' || sort.key === 'lastUpdated') {
+      return sort.dir * String(av || '').localeCompare(String(bv || ''));
+    }
+    return sort.dir * ((Number(av) || 0) - (Number(bv) || 0));
+  }), [filtered, sort]);
+
+  if (!rows.length) {
+    return (<><Header crumb="COURSES · LINKEDIN" title="LinkedIn Learning" sub="Instructor-portal analytics" />
+      <div className="table-card"><div style={{ padding: 24 }} className="muted">
+        No LinkedIn Learning courses cached. Connect LinkedIn in Settings, then run <code>node scrapeLinkedInCourses.js</code>.
+      </div></div></>);
+  }
+
+  const t = data.totals || { learners: 0, shares: 0, likes: 0 };
+  const th = (key, label, align = 'right') => <th key={key} style={{ textAlign: align }} onClick={() => setSort((s) => ({ key, dir: s.key === key ? -s.dir : -1 }))}>{label}{sort.key === key ? (sort.dir < 0 ? ' ↓' : ' ↑') : ''}</th>;
+  return (
+    <>
+      <Header crumb="COURSES · LINKEDIN" title="LinkedIn Learning" sub="Published as Starweaver Group, Inc. Licensor. Watch time and completion are not exposed at this level." actions={<button className="btn btn-secondary" onClick={() => exportLinkedInCsv(sorted)}>⬇ Export CSV</button>} />
+      <div className="kpi-grid">
+        <Kpi icon="📚" bg="#e0e7ff" fg="#0a66c2" label="Courses" value={num(rows.length)} />
+        <Kpi icon="👥" bg="#e0e7ff" fg="#0a66c2" label="Learners" value={num(t.learners)} />
+        <Kpi icon="🔁" bg="#e0e7ff" fg="#0a66c2" label="Shares" value={num(t.shares)} />
+        <Kpi icon="👍" bg="#e0e7ff" fg="#0a66c2" label="Likes" value={num(t.likes)} />
+      </div>
+      <div className="table-card">
+        <div className="table-header">
+          <input className="table-search" placeholder="Search course or language…" value={q}
+            onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setQ(''); }} />
+          <span className="muted">{sorted.length === rows.length ? `${rows.length} courses` : `${sorted.length} of ${rows.length}`}</span>
+        </div>
+        <div className="table-scroll"><table>
+          <thead><tr><th className="no-sort"></th>{th('title', 'Course', 'left')}{th('language', 'Language', 'left')}{th('learners', 'Learners')}{th('shares', 'Shares')}{th('likes', 'Likes')}{th('lastUpdated', 'Last updated', 'left')}</tr></thead>
+          <tbody>
+            {sorted.map((c) => (
+              <tr key={c.title}>
+                <td><BookmarkButton active={isBookmarked('linkedin', c.title)} onClick={() => toggleBookmark('linkedin', c.title, c.title)} /></td>
+                <td style={{ fontWeight: 500, minWidth: 220 }}>{c.title}</td>
+                <td className="muted" style={{ fontSize: 13 }}>{c.language || '—'}</td>
+                <td style={{ textAlign: 'right' }}>{num(c.learners)}</td>
+                <td style={{ textAlign: 'right' }}>{num(c.shares)}</td>
+                <td style={{ textAlign: 'right' }}>{num(c.likes)}</td>
+                <td className="muted" style={{ fontSize: 13 }}>{c.lastUpdated || '—'}</td>
               </tr>
             ))}
           </tbody>
@@ -1302,7 +1420,7 @@ function Coupons({ udemy }) {
 }
 
 // ---------------- Settings (connect flows + theme + refresh) ----------------
-function Settings({ conn, dark, setDark, lastUpdate, onRefresh }) {
+function Settings({ conn, dark, setDark, lastUpdate, lastRun, onRefresh }) {
   const connected = conn?.connected;
   return (
     <>
@@ -1326,6 +1444,10 @@ function Settings({ conn, dark, setDark, lastUpdate, onRefresh }) {
             <label>Go1 connection</label>
             <ConnectGo1 onConnected={onRefresh} />
           </div>
+          <div className="setting-row">
+            <label>LinkedIn Learning connection</label>
+            <ConnectLinkedIn onConnected={onRefresh} />
+          </div>
           <div className="setting">
             <label>Data feeds</label>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{['enrollment', 'revenue', 'captions'].map((k) => <span key={k} className={'pill ' + (conn?.data?.[k] ? 'ok' : 'draft')}>{k} {conn?.data?.[k] ? '✓' : '—'}</span>)}</div>
@@ -1338,6 +1460,37 @@ function Settings({ conn, dark, setDark, lastUpdate, onRefresh }) {
             </div>
           </div>
           <div className="setting"><label>Last data refresh</label><div className="muted">{relTime(lastUpdate)} — updates run daily</div></div>
+          <div className="setting">
+            {/* Per-step outcome of the last daily run. Previously only
+                last-update.json held this and nothing read it, so a run with
+                four failed steps was indistinguishable from a clean one. */}
+            <label>Last update run</label>
+            {!lastRun ? <div className="muted">No run recorded yet.</div> : (
+              <>
+                <div className="muted" style={{ marginBottom: 8 }}>
+                  Finished {relTime(lastRun.finishedAt)}
+                  {lastRun.results?.some((r) => r.ok === false)
+                    && <b style={{ color: '#dc2626' }}> — {lastRun.results.filter((r) => r.ok === false).length} step(s) failed</b>}
+                </div>
+                <div className="run-steps">
+                  {(lastRun.results || []).map((r) => (
+                    <div key={r.name} className={'run-step ' + (r.skipped ? 'skip' : r.ok ? 'ok' : 'bad')}>
+                      <span>{r.skipped ? '⏭' : r.ok ? '✓' : '✕'}</span>
+                      <span className="rs-name">{r.name}</span>
+                      <span className="muted">{r.skipped ? r.skipped : `${r.secs}s`}</span>
+                    </div>
+                  ))}
+                </div>
+                {lastRun.results?.some((r) => r.ok === false) && (
+                  <div className="muted" style={{ marginTop: 8, fontSize: 12.5 }}>
+                    A failed step means the write guard refused bad data, so the old figures are still
+                    in place — they are simply not current. The usual cause is an expired session:
+                    reconnect the platform above and re-run.
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
     </>

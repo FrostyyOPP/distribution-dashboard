@@ -16,6 +16,14 @@ const STEPS = [
   ['Udemy coupons', 'scrapeCoupons.js', 'udemy'],
   ['Udemy captions', 'scrapeCaptions.js', 'udemy'],
   ['Coursera metrics', 'scrapeCourseraMetrics.js', 'coursera'],
+  // Looker's course_comparison tile under-reports: on 2026-08-05 it returned
+  // 5,453 enrollments for a course whose real total was 36,401, and the same
+  // failure recurred in September. Enrollment is monotonic, so a fall is always
+  // wrong. These two steps read the admin Courses table — which was verified
+  // against the affected courses — and repair coursera_metrics straight after
+  // the Looker scrape writes it. Without them the dashboard has run ~20% low.
+  ['Coursera enrollment (authoritative)', 'scrapeCourseraEnrollment.js', 'coursera'],
+  ['Coursera enrollment fix', 'fixCourseraEnrollment.js', 'coursera'],
   ['Coursera overview', 'scrapeCourseraOverview.js', 'coursera'],
   ['Coursera status + reviews', 'scrapeCourseraStatusReviews.js', 'coursera'],
   ['Coursera CIN courses', 'scrapeCourseraCinCourses.js', 'coursera'],

@@ -62,3 +62,7 @@ server/coursera-bio-backups.json
 *.bak
 *.bak-*
 *.bak[0-9]
+server/linkedin-auth.json
+
+# raw authenticated page captures
+server/snapshots/

@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
+import XLSX from 'xlsx';
 import { udemyGet } from './udemyClient.js';
 import { SUPPORTED_LANGS, startJob as startCaptionJob, getJob as getCaptionJob } from './localizeCaptions.js';
 import {
@@ -16,7 +17,8 @@ import {
   readCourseraCourseItems, searchCourseraItems, readCourseraInstructorProfiles,
   readBookmarks, addBookmark, removeBookmark,
   readCourseraCinCourses, readCourseraCinMetrics, readCourseraCinOverview,
-  readFutureLearnCourses, readGo1Courses, readGo1Lifetime, readEngagement,
+  readFutureLearnCourses, readLinkedInCourses, readGo1Courses, readGo1Lifetime, readEngagement,
+  readFreshness, rawQuery,
 } from './db.js';
 
 const app = express();
@@ -25,6 +27,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const AUTH_FILE = join(__dirname, 'udemy-auth.json');
 const COURSERA_AUTH_FILE = join(__dirname, 'coursera-auth.json');
 const FUTURELEARN_AUTH_FILE = join(__dirname, 'futurelearn-auth.json');
+const LINKEDIN_AUTH_FILE = join(__dirname, 'linkedin-auth.json');
 const GO1_AUTH_FILE = join(__dirname, 'go1-auth.json');
 
 // Convert a Cookie-Editor JSON export into a Playwright session (storageState).
@@ -200,6 +203,31 @@ app.post('/api/futurelearn/connect', (req, res) => {
   res.json({ connected: true, cookieCount: state.cookies.length });
 });
 
+// --- LinkedIn Learning connection (session) -------------------------------
+app.get('/api/linkedin/connection', (req, res) => {
+  res.json({ connected: existsSync(LINKEDIN_AUTH_FILE) });
+});
+
+app.post('/api/linkedin/connect', (req, res) => {
+  const state = cookiesToState(req.body?.cookies ?? req.body);
+  const isLinkedIn = state.cookies.some((c) => /(^|\.)linkedin\.com$/.test(c.domain));
+  if (!state.cookies.length || !isLinkedIn) {
+    return res.status(400).json({
+      error: 'That does not look like a linkedin.com cookie export. Sign in at '
+        + 'linkedin.com/learning/instructor-portal/analytics and export the cookies from that tab.',
+      cookieCount: state.cookies.length,
+      domainsSeen: [...new Set(state.cookies.map((c) => c.domain))],
+    });
+  }
+  writeFileSync(LINKEDIN_AUTH_FILE, JSON.stringify(state, null, 2));
+  res.json({ connected: true, cookieCount: state.cookies.length });
+});
+
+app.post('/api/linkedin/disconnect', (req, res) => {
+  try { if (existsSync(LINKEDIN_AUTH_FILE)) unlinkSync(LINKEDIN_AUTH_FILE); } catch {}
+  res.json({ connected: false });
+});
+
 app.post('/api/futurelearn/disconnect', (req, res) => {
   try { if (existsSync(FUTURELEARN_AUTH_FILE)) unlinkSync(FUTURELEARN_AUTH_FILE); } catch {}
   res.json({ connected: false });
@@ -361,6 +389,11 @@ app.get('/api/coursera-cin/reviews', (req, res) => {
 });
 
 // FutureLearn course list (title, code, category, status, run date, wishlist, enrollment).
+// LinkedIn Learning courses (from the DB).
+app.get('/api/linkedin/courses', (req, res) => {
+  res.json(readLinkedInCourses());
+});
+
 app.get('/api/futurelearn/courses', (req, res) => {
   res.json(readFutureLearnCourses());
 });
@@ -613,6 +646,82 @@ app.get('/bookmarklet', (req, res) => {
   const file = join(__dirname, 'bookmarklet.html');
   if (existsSync(file)) res.sendFile(file);
   else res.status(404).send('bookmarklet.html not found');
+});
+
+// --- One-call export ------------------------------------------------------
+// Everything, as a single workbook or a single JSON, so another machine can
+// pull the whole dataset in one request instead of stitching a dozen endpoints
+// together. Reading is the only thing that travels: the scrapers need the
+// session files and a headed browser, so they stay on the machine that has them.
+//
+//   curl -u user:pass -O -J https://<host>/api/export.xlsx
+//   curl -u user:pass https://<host>/api/export.json
+const EXPORT_TABLES = [
+  ['Udemy courses', 'SELECT * FROM udemy_real_course_ids'],
+  ['Udemy revenue by course', 'SELECT * FROM revenue_course'],
+  ['Udemy revenue monthly', 'SELECT * FROM revenue_monthly'],
+  ['Udemy enrollment', 'SELECT * FROM enrollment'],
+  ['Udemy engagement', 'SELECT * FROM engagement_course'],
+  ['Udemy captions', 'SELECT * FROM captions'],
+  ['Udemy coupons', 'SELECT * FROM coupons'],
+  ['Coursera SW metrics', 'SELECT * FROM coursera_metrics'],
+  ['Coursera SW status', 'SELECT * FROM coursera_course_status'],
+  ['Coursera SW reviews', 'SELECT * FROM coursera_reviews'],
+  ['Coursera CIN metrics', 'SELECT * FROM coursera_cin_metrics'],
+  ['Coursera CIN reviews', 'SELECT * FROM coursera_cin_reviews'],
+  ['Coursera revenue quarterly', 'SELECT * FROM coursera_revenue_quarterly'],
+  ['Coursera instructors', 'SELECT * FROM coursera_instructor_profiles'],
+  ['Coursera rating history', 'SELECT * FROM coursera_rating_history'],
+  ['Coursera course items', 'SELECT * FROM coursera_course_items'],
+  ['FutureLearn courses', 'SELECT * FROM futurelearn_courses'],
+  ['LinkedIn courses', 'SELECT * FROM linkedin_courses'],
+  ['LinkedIn revenue', 'SELECT * FROM linkedin_revenue'],
+  ['Go1 courses', 'SELECT * FROM go1_courses'],
+  ['Go1 history', 'SELECT * FROM go1_course_history'],
+];
+
+function collectExport() {
+  const out = {};
+  for (const [name, sql] of EXPORT_TABLES) {
+    try { out[name] = rawQuery(sql); } catch (e) { out[name] = { error: String(e.message) }; }
+  }
+  return out;
+}
+
+app.get('/api/export.json', (req, res) => {
+  res.json({ generatedAt: new Date().toISOString(), freshness: readFreshness(), data: collectExport() });
+});
+
+app.get('/api/export.xlsx', (req, res) => {
+  const data = collectExport();
+  const wb = XLSX.utils.book_new();
+
+  // A README first, so whoever opens it knows how old each feed is rather than
+  // assuming every tab was refreshed today.
+  const fresh = readFreshness();
+  const readme = [
+    ['Starweaver — all platform data'],
+    ['Generated', new Date().toISOString()],
+    [],
+    ['Sheet', 'Rows'],
+    ...Object.entries(data).map(([k, v]) => [k, Array.isArray(v) ? v.length : 'error']),
+    [],
+    ['Last successful scrape per job'],
+    ['Job', 'Finished', 'Hours ago'],
+    ...fresh.map((f) => [f.job, f.lastOk, f.hoursAgo]),
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(readme), 'README');
+
+  for (const [name, rows] of Object.entries(data)) {
+    if (!Array.isArray(rows) || !rows.length) continue;
+    // Excel caps sheet names at 31 characters.
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), name.slice(0, 31));
+  }
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition',
+    `attachment; filename="starweaver-all-platforms-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+  res.send(buf);
 });
 
 // --- Landing page + the two dashboards -----------------------------------
