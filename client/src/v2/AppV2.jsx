@@ -36,16 +36,6 @@ const ICONS = {
   coupons: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 9a3 3 0 1 0 0 6" /><path d="M22 9a3 3 0 1 1 0 6" /><rect x="2" y="6" width="20" height="12" rx="2" /><line x1="12" y1="6" x2="12" y2="18" strokeDasharray="2 2" /></svg>,
   settings: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>,
 };
-// LinkedIn Learning is still being built out, so its tab is hidden on the
-// public tunnel and shown only locally — or anywhere with ?linkedin in the URL,
-// which is how to demo it without publishing it. Remove this once it is ready.
-const SHOW_LINKEDIN = (() => {
-  try {
-    if (new URLSearchParams(location.search).has('linkedin')) return true;
-    return /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
-  } catch { return false; }
-})();
-
 const NAV = [['overview', 'Overview'], ['watchlist', 'Watchlist'], ['courses', 'Courses'], ['earnings', 'Earnings'], ['minutes', 'Minutes'], ['captions', 'Captions'], ['coupons', 'Coupons']];
 
 export default function AppV2() {
@@ -139,12 +129,12 @@ export default function AppV2() {
         <main className="main-content">
           <button className="btn btn-secondary menu-btn" style={{ marginBottom: 16 }} onClick={() => setSideOpen((o) => !o)}>☰ Menu</button>
           <div className="platform-tabs">
-            {[['all', 'All Platforms'], ['udemy', 'Udemy'], ['coursera', 'Coursera'], ['coursera_cin', 'Coursera CIN'], ['futurelearn', 'FutureLearn'], ...(SHOW_LINKEDIN ? [['linkedin', 'LinkedIn']] : []), ['go1', 'Go1']].map(([k, l]) => (
+            {[['all', 'All Platforms'], ['udemy', 'Udemy'], ['coursera', 'Coursera'], ['coursera_cin', 'Coursera CIN'], ['futurelearn', 'FutureLearn'], ['linkedin', 'LinkedIn'], ['go1', 'Go1']].map(([k, l]) => (
               <button key={k} className={'ptab' + (platform === k ? ' active' : '') + (k === 'coursera' || k === 'coursera_cin' ? ' p-coursera' : '')} onClick={() => setPlatform(k)}>{l}</button>
             ))}
           </div>
           {view === 'overview' && <Overview udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} linkedin={linkedin} go1={go1.courses} go1Lifetime={go1Lifetime} totalRevenue={totalRevenue} platform={platform} monthly={monthly} engagement={engagement} />}
-          {view === 'watchlist' && <Watchlist bookmarks={bookmarks} udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} go1={go1Lifetime.courses.length ? go1Lifetime.courses : go1.courses} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} onOpen={setSelected} />}
+          {view === 'watchlist' && <Watchlist bookmarks={bookmarks} udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} linkedin={linkedin.courses} go1={go1Lifetime.courses.length ? go1Lifetime.courses : go1.courses} platform={platform} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} onOpen={setSelected} />}
           {view === 'courses' && (
             /* key by platform — both tabs render CourseraView, and without a
                distinct key React reuses the instance and carries the search
@@ -922,9 +912,11 @@ function Go1View({ rows, month, lifetime, isBookmarked, toggleBookmark }) {
 }
 
 // ---------------- Watchlist (cross-platform bookmarked courses) ----------------
-function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, isBookmarked, toggleBookmark, onOpen }) {
+function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, linkedin, go1, platform, isBookmarked, toggleBookmark, onOpen }) {
   const byPlatform = useMemo(() => {
-    const g = { udemy: [], coursera: [], coursera_cin: [], futurelearn: [], go1: [] };
+    // linkedin was absent here, so a bookmarked LinkedIn course was dropped:
+    // the star saved server-side but the Watchlist never showed it.
+    const g = { udemy: [], coursera: [], coursera_cin: [], futurelearn: [], linkedin: [], go1: [] };
     bookmarks.forEach((b) => { if (g[b.platform]) g[b.platform].push(b); });
     return g;
   }, [bookmarks]);
@@ -933,8 +925,19 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
   const courseraRows = byPlatform.coursera.map((b) => coursera.find((c) => (c.slug || c.name) === b.courseKey)).filter(Boolean);
   const courseraCinRows = byPlatform.coursera_cin.map((b) => courseraCin.find((c) => (c.slug || c.name) === b.courseKey)).filter(Boolean);
   const futurelearnRows = byPlatform.futurelearn.map((b) => futurelearn.find((c) => c.slug === b.courseKey)).filter(Boolean);
+  const linkedinRows = byPlatform.linkedin.map((b) => (linkedin || []).find((c) => c.title === b.courseKey)).filter(Boolean);
   const go1Rows = byPlatform.go1.map((b) => go1.find((c) => c.name === b.courseKey)).filter(Boolean);
-  const total = udemyRows.length + courseraRows.length + courseraCinRows.length + futurelearnRows.length + go1Rows.length;
+
+  // The platform tabs are a global filter, so the Watchlist has to honour them.
+  // It used to render every platform's section whatever the tab said, which
+  // read as the tabs being broken.
+  const showAll = !platform || platform === 'all';
+  const show = (key) => showAll || platform === key;
+  const total = (show('udemy') ? udemyRows.length : 0) + (show('coursera') ? courseraRows.length : 0)
+    + (show('coursera_cin') ? courseraCinRows.length : 0) + (show('futurelearn') ? futurelearnRows.length : 0)
+    + (show('linkedin') ? linkedinRows.length : 0) + (show('go1') ? go1Rows.length : 0);
+  const TAB_LABEL = { udemy: 'Udemy', coursera: 'Coursera', coursera_cin: 'Coursera CIN',
+    futurelearn: 'FutureLearn', linkedin: 'LinkedIn', go1: 'Go1' };
 
   // Flatten every platform into one shape for CSV export. Fields a platform
   // doesn't report are left undefined so they export blank rather than 0.
@@ -982,7 +985,7 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
     );
   }
 
-  const section = (label, rows, thead, renderRow) => rows.length > 0 && (
+  const section = (key, label, rows, thead, renderRow) => show(key) && rows.length > 0 && (
     <div className="table-card" style={{ marginBottom: 20 }}>
       <div className="table-header"><strong>{label}</strong><span className="muted">{rows.length} shown</span></div>
       <div className="table-scroll"><table>
@@ -994,9 +997,15 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
 
   return (
     <>
-      <Header crumb="WATCHLIST" title="Watchlist" sub={`${total} bookmarked course${total === 1 ? '' : 's'} across all platforms`}
+      <Header crumb="WATCHLIST" title="Watchlist" sub={showAll ? `${total} bookmarked course${total === 1 ? '' : 's'} across all platforms` : `${total} bookmarked course${total === 1 ? '' : 's'} on ${TAB_LABEL[platform] || platform}`}
         actions={<button className="btn btn-secondary" disabled={!exportRows.length} onClick={() => exportWatchlistCsv(exportRows)}>⬇ Export CSV</button>} />
-      {section('Udemy', udemyRows,
+      {total === 0 && (
+        <div className="table-card"><div className="watchlist-empty">
+          ☆ Nothing bookmarked on {TAB_LABEL[platform] || platform}.<br />
+          Switch to <b>All Platforms</b> to see your other {bookmarks.length} bookmark{bookmarks.length === 1 ? '' : 's'}.
+        </div></div>
+      )}
+      {section('udemy', 'Udemy', udemyRows,
         <><th className="no-sort"></th><th style={{ textAlign: 'left' }}>Course</th><th>Rating</th><th>Enrolled</th><th>Reviews</th><th>Revenue</th></>,
         (c) => (
           <tr key={c.id} className="click" onClick={() => onOpen(c)}>
@@ -1008,7 +1017,7 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
             <td style={{ textAlign: 'right' }}>{c.revenue != null ? usd(c.revenue) : '—'}</td>
           </tr>
         ))}
-      {section('Coursera', courseraRows,
+      {section('coursera', 'Coursera', courseraRows,
         <><th className="no-sort"></th><th style={{ textAlign: 'left' }}>Course</th><th style={{ textAlign: 'left' }}>Status</th><th>Rating</th><th>Enrollments</th><th>Revenue</th></>,
         (c, i) => {
           const key = c.slug || c.name;
@@ -1023,7 +1032,7 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
             </tr>
           );
         })}
-      {section('Coursera CIN', courseraCinRows,
+      {section('coursera_cin', 'Coursera CIN', courseraCinRows,
         <><th className="no-sort"></th><th style={{ textAlign: 'left' }}>Course</th><th style={{ textAlign: 'left' }}>Status</th><th>Rating</th><th>Enrollments</th><th>Revenue</th></>,
         (c, i) => {
           const key = c.slug || c.name;
@@ -1038,7 +1047,7 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
             </tr>
           );
         })}
-      {section('FutureLearn', futurelearnRows,
+      {section('futurelearn', 'FutureLearn', futurelearnRows,
         <><th className="no-sort"></th><th style={{ textAlign: 'left' }}>Course</th><th style={{ textAlign: 'left' }}>Status</th><th>Wishlist</th><th>Enrollment</th></>,
         (c) => (
           <tr key={c.slug}>
@@ -1049,7 +1058,18 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
             <td style={{ textAlign: 'right' }}>{c.enrollment != null ? num(c.enrollment) : '—'}</td>
           </tr>
         ))}
-      {section('Go1', go1Rows,
+      {section('linkedin', 'LinkedIn', linkedinRows,
+        <><th className="no-sort"></th><th style={{ textAlign: 'left' }}>Course</th><th>Learners</th><th>Shares</th><th>Likes</th></>,
+        (c) => (
+          <tr key={c.title}>
+            <td onClick={(e) => e.stopPropagation()}><BookmarkButton active={isBookmarked('linkedin', c.title)} onClick={() => toggleBookmark('linkedin', c.title, c.title)} /></td>
+            <td style={{ fontWeight: 500, minWidth: 220 }}>{c.title}</td>
+            <td style={{ textAlign: 'right' }}>{num(c.learners)}</td>
+            <td style={{ textAlign: 'right' }}>{num(c.shares)}</td>
+            <td style={{ textAlign: 'right' }}>{num(c.likes)}</td>
+          </tr>
+        ))}
+      {section('go1', 'Go1', go1Rows,
         <><th className="no-sort"></th><th style={{ textAlign: 'left' }}>Course</th><th>Enrolments</th><th>Completions</th><th>Total minutes</th></>,
         (c, i) => (
           <tr key={i}>
