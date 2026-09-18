@@ -11,6 +11,8 @@ import { udemyGet } from './udemyClient.js';
 import { SUPPORTED_LANGS, startJob as startCaptionJob, getJob as getCaptionJob } from './localizeCaptions.js';
 import {
   readEnrollment, readRevenue, readCaptions, readCoupons, readCouponQuota, readUdemyRealCourseIds, readTranscripts, setTranscript,
+  readBatchCoverage, readBatchCourseRevenue, readBatchDashboard, readCourseMapDashboard, readParentRevenueTree,
+  readFeedCatalog, readFeedRevenue,
   readCourseraCourses, readCourseraMetrics, readCourseraOverview, readCourseraCourseInstructors, latestUpdatedAt,
   readCourseraCourseStatus, readCourseraReviews, readCourseraCinReviews, readCourseraRevenueImport,
   readCourseraRevenueQuarterly, readCourseraQuarterTotals,
@@ -18,6 +20,7 @@ import {
   readBookmarks, addBookmark, removeBookmark,
   readCourseraCinCourses, readCourseraCinMetrics, readCourseraCinOverview,
   readFutureLearnCourses, readLinkedInCourses, readGo1Courses, readGo1Lifetime, readEngagement,
+  readRevenueDashboard, readCourseRevenueAcrossPlatforms,
   readFreshness, rawQuery,
 } from './db.js';
 
@@ -733,6 +736,43 @@ const MARKETING_DIST = process.env.MARKETING_DIST || join(__dirname, '..', '..',
 const MARKETING_HTML = join(MARKETING_DIST, 'catalog.html');
 
 app.get('/', (req, res) => res.sendFile(join(__dirname, 'home.html')));
+
+// Revenue view — separate from the main dashboard while the SharePoint royalty
+// work is still being shaped.
+app.get('/api/revenue/combined', (req, res) => res.json(readRevenueDashboard()));
+app.get('/api/revenue/by-course', (req, res) => res.json(readCourseRevenueAcrossPlatforms()));
+// Live courses per batch, per platform — counted from the live catalogues, not
+// from a status column in a spreadsheet.
+app.get('/api/batches', (req, res) => res.json(readBatchCoverage()));
+// Parent course -> its courses on each platform, with what each earned.
+app.get('/api/batch-revenue', (req, res) => res.json(readBatchCourseRevenue()));
+app.get('/api/batch-dashboard', (req, res) => res.json(readBatchDashboard()));
+// The resolved course map — live title -> Boostr -> parent -> revenue.
+app.get('/api/course-map', (req, res) => res.json(readCourseMapDashboard()));
+// Parent -> each platform's titles -> what each earned. The all-platforms view.
+app.get('/api/parent-tree', (req, res) => res.json(readParentRevenueTree()));
+
+// --- the feed other tools consume ----------------------------------------
+// Two stable shapes. Everything else here is shaped for this server's own
+// pages; these are an interface.
+app.get('/api/feed/catalog', (req, res) => res.json(readFeedCatalog(req.query.platform)));
+app.get('/api/feed/revenue', (req, res) => res.json(readFeedRevenue(req.query.platform)));
+// THE FINANCE PAGES LIVE IN THE PRIVATE ROYALTY REPO, beside this one, because
+// this repo is public and they are commercial data. They are still served from
+// here so the URLs keep working, but note they are only as private as this
+// server is: it is reachable over ngrok behind basic auth, so treat these three
+// as exposed and move them behind their own server if that stops being enough.
+const ROYALTY_PAGES = join(__dirname, '..', '..', 'starweaver-royalty', 'pages');
+const royaltyPage = (file) => (req, res) =>
+  res.sendFile(join(ROYALTY_PAGES, file), (err) => {
+    if (err) res.status(404).send(
+      `${file} lives in the private starweaver-royalty repo, which is expected at ` +
+      `~/starweaver-royalty alongside this one. It is not there.`);
+  });
+app.get(['/revenue', '/revenue-dashboard'], royaltyPage('revenue.html'));
+// The confirmed batches, on their own page — local only.
+app.get(['/batches', '/swo'], royaltyPage('batches.html'));
+app.get(['/course-map', '/map'], royaltyPage('course-map.html'));
 
 app.get(['/marketing-dashboard', '/marketing-dashboard/'], (req, res) => {
   if (!existsSync(MARKETING_HTML)) {
