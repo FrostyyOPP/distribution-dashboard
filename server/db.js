@@ -1794,8 +1794,8 @@ export function writeRevenueMaster(rows, sourceFile) {
   // same course and quarter — Coursera splits each one across "Course",
   // "Coursera Plus" and "Specialization" product types — and the table holds
   // one total per course per period. Upserting them one at a time made each
-  // row overwrite the last, so only the final product type survived: Coursera
-  // Q2'24–Q2'26 came out as $5,739 instead of $239,398.
+  // row overwrite the last, so only the final product type survived and the
+  // Coursera total came out at roughly 2% of the real figure.
   const agg = new Map();
   for (const r of rows) {
     // A sheet with one title column (Coursera) supplies the same string twice.
@@ -2400,9 +2400,9 @@ const FEED_CATALOG = {
   // A DRAFT IS NOT LIVE, on CIN as on Coursera. coursera_cin_courses is the
   // whole catalogue including unpublished work, and the status lives in
   // coursera_cin_metrics, so the two have to be joined to answer "what is on
-  // sale". Without this, 5 drafts were reported as live — among them
-  // "OpenAI ChatGpt-Enterprise solution Unleashed", an unpublished retitling of
-  // a course that IS live, which then looked like a duplicate listing.
+  // sale". Without this, 5 drafts were reported as live — among them an
+  // unpublished retitling of a course that IS live, which then read downstream
+  // as a duplicate listing of the real one.
   'Coursera CIN': `SELECT c.name AS title, c.slug AS slug,
                           'https://www.coursera.org/learn/' || c.slug AS url, m.status AS status
                      FROM coursera_cin_courses c
