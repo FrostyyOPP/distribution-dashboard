@@ -9,7 +9,8 @@ import ConnectFutureLearn from '../ConnectFutureLearn.jsx';
 import ConnectGo1 from '../ConnectGo1.jsx';
 import ConnectLinkedIn from '../ConnectLinkedIn.jsx';
 import { BarChart, Donut, Histogram, LineChart, ChartPlaceholder } from './charts.jsx';
-import { enrich, classifyDomain, DOMAIN_COLOR, capNames, usd, exportCsv, exportMinutesCsv, exportCourseraCsv, exportFutureLearnCsv, exportLinkedInCsv, exportGo1Csv, exportWatchlistCsv, applyFilter, parseSmartQuery } from './data.js';
+import { enrich, classifyDomain, DOMAIN_COLOR, capNames, usd, exportCsv, exportMinutesCsv, exportCourseraCsv, exportFutureLearnCsv, exportLinkedInCsv, exportGo1Csv, exportWatchlistCsv, applyFilter, parseSmartQuery, FILTER_FIELDS } from './data.js';
+import FilterBuilder, { specOf, describe } from './FilterBuilder.jsx';
 
 const num = (n) => (n == null ? '—' : Math.round(n).toLocaleString());
 const relTime = (iso) => {
@@ -460,6 +461,31 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
   );
 }
 
+// ONE FILTER PER TABLE. Held here rather than inside FilterBuilder so the
+// table can read the spec while the menu is shut — closing the panel must not
+// drop the filter, and a filter you cannot see is the reason the active
+// conditions are always printed above the rows.
+function useColumnFilter(platformKey) {
+  const fields = FILTER_FIELDS[platformKey];
+  const [conditions, setConditions] = useState([]);
+  const [combinator, setCombinator] = useState('AND');
+  const spec = useMemo(() => specOf(conditions, combinator, fields), [conditions, combinator, fields]);
+  return { fields, conditions, setConditions, combinator, setCombinator, spec };
+}
+// What is being hidden, in words, with one click to undo it. A table quietly
+// showing 40 of 320 rows is how somebody reads a filtered total as the truth.
+function ActiveFilter({ f, shown, total }) {
+  if (!f.spec) return null;
+  return (
+    <div className="table-header" style={{ paddingTop: 0, gap: 8 }}>
+      <span className="pill filter-chip">
+        ⛃ {describe(f.conditions, f.combinator, f.fields)}
+        <span onClick={() => f.setConditions([])} className="filter-chip-x" title="Clear the filter">✕</span>
+      </span>
+      <span className="muted">{shown} of {total} rows</span>
+    </div>
+  );
+}
 const PLATFORM_LABELS = { coursera: 'Coursera', coursera_cin: 'Coursera CIN', futurelearn: 'FutureLearn', go1: 'Go1' };
 function PlatformUnavailable({ title, note, platform }) {
   return (
@@ -549,6 +575,7 @@ function Courses({ udemy, totalRevenue, onOpen, onRefresh, isBookmarked, toggleB
   const [domain, setDomain] = useState('All');
   const [sort, setSort] = useState({ key: 'num_reviews', dir: -1 });
   const [visibleCols, setVisibleCols] = useState(loadVisibleCols);
+  const f = useColumnFilter('udemy');
   const domains = useMemo(() => ['All', ...[...new Set(udemy.map((c) => c.domain))].sort()], [udemy]);
   const searchSpec = useMemo(() => parseSmartQuery(q), [q]);
   const clearSearch = () => setQ('');
@@ -559,6 +586,7 @@ function Courses({ udemy, totalRevenue, onOpen, onRefresh, isBookmarked, toggleB
     let r = udemy;
     if (domain !== 'All') r = r.filter((c) => c.domain === domain);
     r = applyFilter(r, searchSpec);
+    r = applyFilter(r, f.spec, f.fields);
     const col = COLS.find((c) => c[0] === sort.key);
     return [...r].sort((a, b) => {
       let av = a[sort.key], bv = b[sort.key];
@@ -566,7 +594,7 @@ function Courses({ udemy, totalRevenue, onOpen, onRefresh, isBookmarked, toggleB
       if (Array.isArray(av)) av = av.length; if (Array.isArray(bv)) bv = bv.length;
       return sort.dir * ((Number(av) || 0) - (Number(bv) || 0));
     });
-  }, [udemy, searchSpec, domain, sort]);
+  }, [udemy, searchSpec, domain, sort, f.spec, f.fields]);
   const th = ([key, label, type]) => (
     <th key={key} className={type === 'none' ? 'no-sort' : ''} onClick={() => type !== 'none' && setSort((s) => ({ key, dir: s.key === key ? -s.dir : -1 }))}>
       {label}{sort.key === key ? (sort.dir < 0 ? ' ↓' : ' ↑') : ''}
@@ -591,9 +619,11 @@ function Courses({ udemy, totalRevenue, onOpen, onRefresh, isBookmarked, toggleB
             onKeyDown={(e) => { if (e.key === 'Escape') clearSearch(); }}
           />
           <select value={domain} onChange={(e) => setDomain(e.target.value)} style={{ width: 'auto', minWidth: 180 }}>{domains.map((d) => <option key={d}>{d}</option>)}</select>
+          <FilterBuilder {...f} rows={udemy} />
           <ColumnPicker visible={visibleCols} setVisible={setVisibleCols} />
           <span className="muted">{rows.length} shown</span>
         </div>
+        <ActiveFilter f={f} shown={rows.length} total={udemy.length} />
         {searchSpec?.conditions.some((c) => c.field !== 'title') && (
           <div className="table-header" style={{ paddingTop: 0, gap: 8 }}>
             <span className="pill" style={{ background: '#eef2ff', color: '#4f46e5' }}>
@@ -637,12 +667,13 @@ function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, re
   const [q, setQ] = useState('');
   const pct = (r) => (r == null ? '—' : (r <= 1 ? Math.round(r * 100) : Math.round(r)) + '%');
   // search across the fields actually shown in the table, so a hit is visible
+  const f = useColumnFilter('coursera');
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return rows;
-    return rows.filter((c) => [c.name, c.domain, c.status, ...(c.instructorNames || [])]
+    const bySearch = !s ? rows : rows.filter((c) => [c.name, c.domain, c.status, ...(c.instructorNames || [])]
       .some((v) => String(v || '').toLowerCase().includes(s)));
-  }, [rows, q]);
+    return applyFilter(bySearch, f.spec, f.fields);
+  }, [rows, q, f.spec, f.fields]);
   // Quarter columns sort on `q<index>`, which lives inside the quarterlyRevenue
   // array rather than being a field of its own.
   const val = (c, key) => (/^q\d+$/.test(key) ? c.quarterlyRevenue?.[Number(key.slice(1))] : c[key]);
@@ -672,8 +703,10 @@ function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, re
         <div className="table-header">
           <input className="table-search" placeholder="Search course, domain, status or instructor…" value={q}
             onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setQ(''); }} />
+          <FilterBuilder {...f} rows={rows} />
           <span className="muted">{data.length === rows.length ? `${rows.length} courses` : `${data.length} of ${rows.length}`}</span>
         </div>
+        <ActiveFilter f={f} shown={data.length} total={rows.length} />
         <div className="table-scroll"><table>
         <thead><tr><th className="no-sort"></th>{th('name', 'Course', 'left')}{th('domain', 'Domain', 'left')}{th('status', 'Status', 'center')}{th('enrollments', 'Enrollments')}{th('completions', 'Completions')}{th('completionRate', 'Compl. Rate')}{th('rating', 'Rating')}<th className="no-sort">Reviews</th>{th('revenue', 'Revenue')}{quarters.map((qt, qi) => <th key={qt} style={{ textAlign: 'right' }} onClick={() => setSort((s) => ({ key: `q${qi}`, dir: s.key === `q${qi}` ? -s.dir : -1 }))}>{qt}{sort.key === `q${qi}` ? (sort.dir < 0 ? ' \u2193' : ' \u2191') : ''}</th>)}{showInstructorCheck && <th className="no-sort">Instructor</th>}{showInstructorCheck && th('instructorNames', 'Instructor Names', 'left')}</tr></thead>
         <tbody>
@@ -712,12 +745,13 @@ function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, re
 function FutureLearnView({ rows, isBookmarked, toggleBookmark }) {
   const [sort, setSort] = useState({ key: 'enrollment', dir: -1 });
   const [q, setQ] = useState('');
+  const f = useColumnFilter('futurelearn');
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return rows;
-    return rows.filter((c) => [c.title, c.code, c.category, c.status]
+    const bySearch = !s ? rows : rows.filter((c) => [c.title, c.code, c.category, c.status]
       .some((v) => String(v || '').toLowerCase().includes(s)));
-  }, [rows, q]);
+    return applyFilter(bySearch, f.spec, f.fields);
+  }, [rows, q, f.spec, f.fields]);
   const data = useMemo(() => [...filtered].sort((a, b) => {
     const av = a[sort.key], bv = b[sort.key];
     if (sort.key === 'title' || sort.key === 'category' || sort.key === 'status') return sort.dir * String(av || '').localeCompare(String(bv || ''));
@@ -739,8 +773,10 @@ function FutureLearnView({ rows, isBookmarked, toggleBookmark }) {
         <div className="table-header">
           <input className="table-search" placeholder="Search course, code, category or status…" value={q}
             onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setQ(''); }} />
+          <FilterBuilder {...f} rows={rows} />
           <span className="muted">{data.length === rows.length ? `${rows.length} courses` : `${data.length} of ${rows.length}`}</span>
         </div>
+        <ActiveFilter f={f} shown={data.length} total={rows.length} />
         <div className="table-scroll"><table>
           <thead><tr><th className="no-sort"></th>{th('title', 'Course', 'left')}{th('code', 'Code', 'left')}{th('category', 'Category', 'left')}{th('status', 'Status')}<th className="no-sort">Start date</th>{th('wishlistCount', 'Wishlist')}{th('enrollment', 'Enrollment')}</tr></thead>
           <tbody>
@@ -772,11 +808,12 @@ function LinkedInView({ data, isBookmarked, toggleBookmark }) {
   const rows = data.courses || [];
   const [sort, setSort] = useState({ key: 'learners', dir: -1 });
   const [q, setQ] = useState('');
+  const f = useColumnFilter('linkedin');
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return rows;
-    return rows.filter((c) => [c.title, c.language].some((v) => String(v || '').toLowerCase().includes(s)));
-  }, [rows, q]);
+    const bySearch = !s ? rows : rows.filter((c) => [c.title, c.language].some((v) => String(v || '').toLowerCase().includes(s)));
+    return applyFilter(bySearch, f.spec, f.fields);
+  }, [rows, q, f.spec, f.fields]);
   const sorted = useMemo(() => [...filtered].sort((a, b) => {
     const av = a[sort.key], bv = b[sort.key];
     if (sort.key === 'title' || sort.key === 'language' || sort.key === 'lastUpdated') {
@@ -807,8 +844,10 @@ function LinkedInView({ data, isBookmarked, toggleBookmark }) {
         <div className="table-header">
           <input className="table-search" placeholder="Search course or language…" value={q}
             onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setQ(''); }} />
+          <FilterBuilder {...f} rows={rows} />
           <span className="muted">{sorted.length === rows.length ? `${rows.length} courses` : `${sorted.length} of ${rows.length}`}</span>
         </div>
+        <ActiveFilter f={f} shown={sorted.length} total={rows.length} />
         <div className="table-scroll"><table>
           <thead><tr><th className="no-sort"></th>{th('title', 'Course', 'left')}{th('language', 'Language', 'left')}{th('learners', 'Learners')}{th('shares', 'Shares')}{th('likes', 'Likes')}{th('lastUpdated', 'Last updated', 'left')}</tr></thead>
           <tbody>
@@ -840,10 +879,12 @@ function Go1View({ rows, month, lifetime, isBookmarked, toggleBookmark }) {
   const [sort, setSort] = useState({ key: 'enrolments', dir: -1 });
   const [q, setQ] = useState('');
   const allRows = scope === 'lifetime' ? lifetime.courses : rows;
+  const f = useColumnFilter('go1');
   const activeRows = useMemo(() => {
     const s = q.trim().toLowerCase();
-    return s ? allRows.filter((c) => String(c.name || '').toLowerCase().includes(s)) : allRows;
-  }, [allRows, q]);
+    const bySearch = s ? allRows.filter((c) => String(c.name || '').toLowerCase().includes(s)) : allRows;
+    return applyFilter(bySearch, f.spec, f.fields);
+  }, [allRows, q, f.spec, f.fields]);
   const data = useMemo(() => [...activeRows].sort((a, b) => {
     if (STR_SORT_KEYS.has(sort.key)) return sort.dir * String(a[sort.key] || '').localeCompare(String(b[sort.key] || ''));
     return sort.dir * ((Number(a[sort.key]) || 0) - (Number(b[sort.key]) || 0));
@@ -890,8 +931,10 @@ function Go1View({ rows, month, lifetime, isBookmarked, toggleBookmark }) {
         <div className="table-header">
           <input className="table-search" placeholder="Search courses…" value={q}
             onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setQ(''); }} />
+          <FilterBuilder {...f} rows={allRows} />
           <span className="muted">{data.length === allRows.length ? `${allRows.length} courses` : `${data.length} of ${allRows.length}`}</span>
         </div>
+        <ActiveFilter f={f} shown={data.length} total={allRows.length} />
         <div className="table-scroll"><table>
         <thead><tr><th className="no-sort"></th>{th('name', 'Course', 'left')}{th('enrolments', 'Enrolments')}{th('completions', 'Completions')}{th('totalMinutes', 'Total minutes')}{th('avgSessionMinutes', 'Avg session')}</tr></thead>
         <tbody>
