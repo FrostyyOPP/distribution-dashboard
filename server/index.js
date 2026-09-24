@@ -127,6 +127,11 @@ app.use(express.json());
 const CATALOG_FILE =
   process.env.CATALOG_FILE || join(__dirname, '..', '..', 'marketing-tool', 'dist', 'catalog.html');
 
+// The catalog lived at /catalog until 2026-09 and that link is already in
+// people's hands (and in the marketing-tool README), so the old path keeps
+// working — a permanent redirect to the new name, above the auth gate too.
+app.get('/catalog', (req, res) => res.redirect(301, '/distribution-catalog'));
+
 app.get('/distribution-catalog', (req, res) => {
   if (!existsSync(CATALOG_FILE)) {
     return res
