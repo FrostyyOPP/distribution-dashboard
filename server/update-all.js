@@ -35,6 +35,9 @@ const STEPS = [
   // yet, so a course's enrollment, once read, would never be refreshed.
   ['FutureLearn enrollment', 'scrapeFutureLearnEnrollment.js', 'futurelearn', ['--force']],
   ['LinkedIn courses', 'scrapeLinkedInCourses.js', 'linkedin'],
+  // The catalogue first: every live Go1 course with its language and link.
+  // The two after it are activity (who studied what, per month).
+  ['Go1 catalogue', 'scrapeGo1Catalog.js', 'go1'],
   ['Go1 courses (latest month)', 'scrapeGo1Courses.js', 'go1'],
   ['Go1 history (every month)', 'scrapeGo1History.js', 'go1'],
   ['Coursera CIN courses', 'scrapeCourseraCinCourses.js', 'coursera'],
