@@ -925,13 +925,22 @@ const upsertRealCourseIdStmt = db.prepare(
      (course_id, real_course_id, title, slug, url, currency, best_price_value, min_custom_price, max_custom_price, coupons_remaining, updated_at)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
    ON CONFLICT(course_id) DO UPDATE SET
-     real_course_id = excluded.real_course_id, title = excluded.title,
-     -- Keep a slug already known when a caller cannot supply one.
+     title = excluded.title,
+     -- TWO CALLERS, EACH HOLDING HALF THE ROW. importRealCourseIds.js brings the
+     -- real numeric id, currency, prices and coupons left from Udemy's CSV, and
+     -- no slug; scrapeUdemyUrls.js brings the slug and URL from the API, and none
+     -- of the rest. Every field is therefore kept when a caller has no value for
+     -- it. Replaced outright, the URL run on 2026-09-16 set the real id, prices
+     -- and coupon counts to NULL on all 172 rows — the ids are what the bulk
+     -- coupon tool is keyed on — and nothing reported it.
+     real_course_id = COALESCE(excluded.real_course_id, udemy_real_course_ids.real_course_id),
      slug = COALESCE(excluded.slug, udemy_real_course_ids.slug),
      url = COALESCE(excluded.url, udemy_real_course_ids.url),
-     currency = excluded.currency,
-     best_price_value = excluded.best_price_value, min_custom_price = excluded.min_custom_price,
-     max_custom_price = excluded.max_custom_price, coupons_remaining = excluded.coupons_remaining,
+     currency = COALESCE(excluded.currency, udemy_real_course_ids.currency),
+     best_price_value = COALESCE(excluded.best_price_value, udemy_real_course_ids.best_price_value),
+     min_custom_price = COALESCE(excluded.min_custom_price, udemy_real_course_ids.min_custom_price),
+     max_custom_price = COALESCE(excluded.max_custom_price, udemy_real_course_ids.max_custom_price),
+     coupons_remaining = COALESCE(excluded.coupons_remaining, udemy_real_course_ids.coupons_remaining),
      updated_at = excluded.updated_at`
 );
 export function writeUdemyRealCourseIds(rows) {

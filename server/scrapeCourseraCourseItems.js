@@ -38,6 +38,12 @@ if (CIN) {
     .filter(([, v]) => v.slug && !SKIP.has((v.status || '').toLowerCase()))
     .map(([name, v]) => ({ slug: v.slug, name: name.trim() }));
 }
+// ONE COURSE, ONE READ. The status table keeps a renamed course under both of
+// its names, pointing at one slug — 23 of them on 2026-09-24 — so a course
+// list built by name fetched those twice and stored every item twice, and the
+// (course_slug, item_id) key crashed the write. The run had not saved since
+// mid-August. Collected by slug instead; which name labels it does not matter.
+courses = [...new Map(courses.map((c) => [c.slug, c])).values()];
 if (!courses.length) { console.error('❌ no courses to scan — is the course-status table populated?'); process.exit(1); }
 console.log(`${CATALOG}: scanning ${courses.length} courses\n`);
 
@@ -98,9 +104,11 @@ for (let i = 0; i < courses.length; i++) {
 }
 
 if (failed) console.log(`\n${failed} course(s) could not be read`);
-const res = writeCourseraCourseItems(rows);
+const uniqueRows = [...new Map(rows.map((r) => [`${r.courseSlug}|${r.itemId}`, r])).values()];
+if (uniqueRows.length !== rows.length) console.log(`  (${rows.length - uniqueRows.length} duplicate item rows dropped)`);
+const res = writeCourseraCourseItems(uniqueRows);
 if (!res.ok) { console.error(`❌ refused: ${res.error || 'guard tripped'}`); process.exit(1); }
-console.log(`\n✅ ${res.written} items stored across ${new Set(rows.map((r) => r.courseSlug)).size} courses`);
+console.log(`\n✅ ${res.written} items stored across ${new Set(uniqueRows.map((r) => r.courseSlug)).size} courses`);
 
 const { totals } = readCourseraCourseItems({ catalog: CATALOG });
 console.log('\ncontent mix:');
