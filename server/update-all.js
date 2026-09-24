@@ -2,12 +2,16 @@
 // Session-based scrapers open a browser window briefly (needed to pass Cloudflare).
 // Resilient: one failing step doesn't stop the rest. Writes last-update.json.
 // Run: npm run update
+// .env is where UDEMY_SCRAPING lives, so it has to be read here — launchd starts
+// this with a bare environment, and without it the switch could never be on.
+import 'dotenv/config';
 import { spawn } from 'node:child_process';
 import { writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const PLAN = process.argv.includes('--plan');
 
 // Datasets that change day to day. Each entry is [label, script file, platform].
 // Enrollment is slow (~15 min, public pages) — run it manually/weekly instead.
@@ -15,6 +19,12 @@ const STEPS = [
   ['Udemy revenue', 'scrapeRevenue.js', 'udemy'],
   ['Udemy coupons', 'scrapeCoupons.js', 'udemy'],
   ['Udemy captions', 'scrapeCaptions.js', 'udemy'],
+  // Minutes watched and enrollment were never scheduled at all, so both went
+  // stale however the Udemy switch was set. --force on enrollment, because
+  // without it the scraper restamps cached counts as fresh without re-reading
+  // them.
+  ['Udemy minutes watched', 'scrapeEngagement.js', 'udemy'],
+  ['Udemy enrollment', 'scrapeEnrollment.js', 'udemy', ['--force']],
   ['Coursera metrics', 'scrapeCourseraMetrics.js', 'coursera'],
   // Looker's course_comparison tile under-reports: on 2026-08-05 it returned
   // 5,453 enrollments for a course whose real total was 36,401, and the same
@@ -26,6 +36,12 @@ const STEPS = [
   ['Coursera enrollment fix', 'fixCourseraEnrollment.js', 'coursera'],
   ['Coursera overview', 'scrapeCourseraOverview.js', 'coursera'],
   ['Coursera status + reviews', 'scrapeCourseraStatusReviews.js', 'coursera'],
+  // Slow-moving and slow to fetch: who the instructors are, their profiles, and
+  // each course's content item by item. Weekly is plenty — each runs only once
+  // its table is seven days old. None had been refreshed in 16 to 70 days.
+  ['Coursera instructors', 'scrapeCourseraInstructors.js', 'coursera', [], { everyDays: 7, table: 'coursera_course_instructors' }],
+  ['Coursera instructor profiles', 'scrapeCourseraInstructorProfiles.js', 'coursera', [], { everyDays: 7, table: 'coursera_instructor_profiles' }],
+  ['Coursera course items', 'scrapeCourseraCourseItems.js', 'coursera', [], { everyDays: 7, table: 'coursera_course_items' }],
   // The other three platforms, each skipped on its own if its session is
   // missing. Until 2026-09-24 none of them ran on a schedule at all: Go1 was 72
   // days old, FutureLearn 10 and LinkedIn 9, with nothing on screen saying so.
@@ -35,6 +51,9 @@ const STEPS = [
   // yet, so a course's enrollment, once read, would never be refreshed.
   ['FutureLearn enrollment', 'scrapeFutureLearnEnrollment.js', 'futurelearn', ['--force']],
   ['LinkedIn courses', 'scrapeLinkedInCourses.js', 'linkedin'],
+  // The catalogue first: every live Go1 course with its language and link.
+  // The two after it are activity (who studied what, per month).
+  ['Go1 catalogue', 'scrapeGo1Catalog.js', 'go1'],
   ['Go1 courses (latest month)', 'scrapeGo1Courses.js', 'go1'],
   ['Go1 history (every month)', 'scrapeGo1History.js', 'go1'],
   ['Coursera CIN courses', 'scrapeCourseraCinCourses.js', 'coursera'],
@@ -72,17 +91,42 @@ function run(file, args = []) {
 
 console.log(`\n=== Dashboard update · ${new Date().toISOString()} ===`);
 const results = [];
-for (const [name, file, platform, args] of STEPS) {
+// A step marked { everyDays, table } runs only once that table is older than
+// everyDays. Read from the table itself, so a manual run resets the clock too.
+async function ageInDays(table) {
+  try {
+    const { db } = await import('./db.js');
+    const t = db.prepare(`SELECT MAX(updated_at) AS t FROM ${table}`).get().t;
+    return t ? (Date.now() - Date.parse(t)) / 864e5 : Infinity;
+  } catch { return Infinity; }
+}
+
+for (const [name, file, platform, args, opts] of STEPS) {
   if (platform === 'coursera' && !needsCoursera) { results.push({ name, skipped: 'not connected' }); continue; }
   if (SESSION[platform] && !connected(platform)) { results.push({ name, skipped: 'not connected' }); continue; }
   if (platform === 'udemy' && !needsUdemy) {
     results.push({ name, skipped: UDEMY_DISABLED ? 'udemy scraping disabled' : 'not connected' });
     continue;
   }
+  if (opts?.everyDays) {
+    const age = await ageInDays(opts.table);
+    if (age < opts.everyDays) {
+      results.push({ name, skipped: `up to date — runs every ${opts.everyDays} days (last ${age.toFixed(1)}d ago)` });
+      continue;
+    }
+  }
+  // --plan: say what would run and why, and run nothing.
+  if (PLAN) { results.push({ name, plan: `would run ${file}${args?.length ? ' ' + args.join(' ') : ''}` }); continue; }
   console.log(`\n▶ ${name}…`);
   const t = Date.now();
   const code = await run(file, args);
   results.push({ name, ok: code === 0, secs: Math.round((Date.now() - t) / 1000) });
+}
+
+if (PLAN) {
+  console.log('\n=== Plan (nothing run, nothing written) ===');
+  for (const r of results) console.log(`  ${r.plan ? '▶' : '⏭'}  ${r.name.padEnd(38)} ${r.plan || r.skipped}`);
+  process.exit(0);
 }
 
 // Ratings and enrollment are REPLACED by the scrapes above, so yesterday's

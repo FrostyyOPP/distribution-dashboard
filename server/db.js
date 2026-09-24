@@ -475,6 +475,24 @@ db.exec(`
     PRIMARY KEY (course_name, month)
   );
 
+  -- Every Starweaver item in the Go1 library, from Go1's own learning-objects
+  -- API — the catalogue. go1_courses and go1_course_history are ACTIVITY
+  -- tables: they list only courses someone studied that month, so as a
+  -- catalogue they missed every course nobody had started (145 vs 182 live).
+  CREATE TABLE IF NOT EXISTS go1_catalog (
+    lo_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    type TEXT,
+    language TEXT,
+    state TEXT,
+    provider TEXT,
+    rating REAL,
+    ratings_count INTEGER,
+    duration_minutes INTEGER,
+    url TEXT,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS go1_courses (
     name TEXT PRIMARY KEY,
     enrolments INTEGER,
@@ -907,13 +925,22 @@ const upsertRealCourseIdStmt = db.prepare(
      (course_id, real_course_id, title, slug, url, currency, best_price_value, min_custom_price, max_custom_price, coupons_remaining, updated_at)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
    ON CONFLICT(course_id) DO UPDATE SET
-     real_course_id = excluded.real_course_id, title = excluded.title,
-     -- Keep a slug already known when a caller cannot supply one.
+     title = excluded.title,
+     -- TWO CALLERS, EACH HOLDING HALF THE ROW. importRealCourseIds.js brings the
+     -- real numeric id, currency, prices and coupons left from Udemy's CSV, and
+     -- no slug; scrapeUdemyUrls.js brings the slug and URL from the API, and none
+     -- of the rest. Every field is therefore kept when a caller has no value for
+     -- it. Replaced outright, the URL run on 2026-09-16 set the real id, prices
+     -- and coupon counts to NULL on all 172 rows — the ids are what the bulk
+     -- coupon tool is keyed on — and nothing reported it.
+     real_course_id = COALESCE(excluded.real_course_id, udemy_real_course_ids.real_course_id),
      slug = COALESCE(excluded.slug, udemy_real_course_ids.slug),
      url = COALESCE(excluded.url, udemy_real_course_ids.url),
-     currency = excluded.currency,
-     best_price_value = excluded.best_price_value, min_custom_price = excluded.min_custom_price,
-     max_custom_price = excluded.max_custom_price, coupons_remaining = excluded.coupons_remaining,
+     currency = COALESCE(excluded.currency, udemy_real_course_ids.currency),
+     best_price_value = COALESCE(excluded.best_price_value, udemy_real_course_ids.best_price_value),
+     min_custom_price = COALESCE(excluded.min_custom_price, udemy_real_course_ids.min_custom_price),
+     max_custom_price = COALESCE(excluded.max_custom_price, udemy_real_course_ids.max_custom_price),
+     coupons_remaining = COALESCE(excluded.coupons_remaining, udemy_real_course_ids.coupons_remaining),
      updated_at = excluded.updated_at`
 );
 export function writeUdemyRealCourseIds(rows) {
@@ -1445,6 +1472,9 @@ export function readFutureLearnCourses() {
   const courses = db.prepare('SELECT * FROM futurelearn_courses').all().map((r) => ({
     slug: r.slug, title: r.title, code: r.code, category: r.category, status: r.status,
     startDate: r.start_date, wishlistCount: r.wishlist_count, enrollment: r.enrollment,
+    // Public or Private. A private run is live but not on sale to the public, so
+    // counting it in "live courses" overstated FutureLearn (204 vs 146).
+    visibility: r.visibility ?? null,
   }));
   const scrapedAt = db.prepare('SELECT MAX(updated_at) AS t FROM futurelearn_courses').get().t;
   return { courses, scrapedAt };
@@ -1455,6 +1485,37 @@ const insertGo1CourseStmt = db.prepare(
   `INSERT INTO go1_courses (name, enrolments, completions, total_minutes, avg_session_minutes, month, updated_at)
    VALUES (?, ?, ?, ?, ?, ?, ?)`
 );
+const insertGo1CatalogStmt = db.prepare(
+  `INSERT INTO go1_catalog (lo_id, title, type, language, state, provider, rating, ratings_count, duration_minutes, url, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+);
+export function writeGo1Catalog(items) {
+  const ts = nowIso();
+  return guardedReplaceAll(
+    'go1_catalog', items,
+    (i) => insertGo1CatalogStmt.run(i.loId, i.title, i.type ?? null, i.language ?? null, i.state ?? null,
+      i.provider ?? null, i.rating ?? null, i.ratingsCount ?? null, i.durationMinutes ?? null, i.url ?? null, ts),
+    { job: 'go1_catalog' }
+  );
+}
+export function readGo1Catalog() {
+  const items = db.prepare('SELECT * FROM go1_catalog ORDER BY title').all().map((r) => ({
+    loId: r.lo_id, title: r.title, type: r.type, language: r.language, state: r.state, provider: r.provider,
+    rating: r.rating, ratingsCount: r.ratings_count, durationMinutes: r.duration_minutes, url: r.url,
+  }));
+  const scrapedAt = db.prepare('SELECT MAX(updated_at) AS t FROM go1_catalog').get().t;
+  return { items, scrapedAt };
+}
+
+// THE GO1 CATALOGUE AS A QUERY, shared by every reader that asks "what is live
+// on Go1". Published courses from go1_catalog; playlists are bundles of courses
+// already listed, not courses. Until the catalogue has been scraped once, it
+// falls back to the old activity union so nothing goes empty.
+const GO1_LIVE_TITLES = `
+  SELECT title AS t FROM go1_catalog WHERE type = 'interactive' AND state = 'published'
+  UNION SELECT name AS t FROM go1_courses WHERE NOT EXISTS (SELECT 1 FROM go1_catalog)
+  UNION SELECT course_name AS t FROM go1_course_history WHERE NOT EXISTS (SELECT 1 FROM go1_catalog)`;
+
 export function writeGo1Courses(courses, month) {
   const ts = nowIso();
   return guardedReplaceAll(
@@ -1540,7 +1601,7 @@ const ALL_TABLES = [
   'coursera_revenue_quarterly', 'coursera_course_items', 'coursera_instructor_profiles',
   'coursera_cin_courses', 'coursera_cin_metrics', 'coursera_cin_overview_kpis', 'coursera_rating_history',
   'linkedin_courses', 'linkedin_revenue', 'revenue_master',
-  'futurelearn_courses', 'go1_courses', 'go1_course_history', 'engagement_course', 'engagement_monthly', 'engagement_meta', 'engagement_ub_monthly',
+  'futurelearn_courses', 'go1_catalog', 'go1_courses', 'go1_course_history', 'engagement_course', 'engagement_monthly', 'engagement_meta', 'engagement_ub_monthly',
   'engagement_course_monthly',
 ];
 // Most scrape tables stamp `updated_at`; a few use a different column name.
@@ -1778,7 +1839,7 @@ const PLATFORM_SOURCES = {
   coursera_cin: [['coursera_cin_metrics', 'Enrollments & ratings'], ['coursera_cin_courses', 'Course list']],
   futurelearn: [['futurelearn_courses', 'Courses & enrollment']],
   linkedin: [['linkedin_courses', 'Learners, shares & likes']],
-  go1: [['go1_courses', 'Courses'], ['go1_course_history', 'Monthly history']],
+  go1: [['go1_catalog', 'Course catalogue'], ['go1_courses', 'Latest month'], ['go1_course_history', 'Monthly history']],
 };
 export function readPlatformFreshness() {
   const now = Date.now();
@@ -2140,12 +2201,9 @@ const LIVE_CATALOGUES = [
   ['Coursera CIN', 'SELECT name AS t FROM coursera_cin_courses'],
   // FutureLearn calls a running course "In progress"; Draft and Finished are not live.
   ['FutureLearn', "SELECT title AS t FROM futurelearn_courses WHERE status = 'In progress'"],
-  // go1_courses is a MONTHLY ACTIVITY snapshot — only courses with at least one
-  // enrolment that month (73 in June 2026). The catalogue is the union with the
-  // history, which carries 145 distinct courses over 15 months. Using the
-  // snapshot alone understated Go1 and made shipped courses look missing.
-  ['Go1', `SELECT DISTINCT name AS t FROM go1_courses
-           UNION SELECT DISTINCT course_name AS t FROM go1_course_history`],
+  // The Go1 catalogue itself (go1_catalog). The activity tables used before
+  // list only courses someone studied, so they missed 37 of 182 live courses.
+  ['Go1', GO1_LIVE_TITLES],
   ['LinkedIn', 'SELECT title AS t FROM linkedin_courses'],
 ];
 
@@ -2318,8 +2376,7 @@ export function readBatchDashboard() {
   const LIVE = {
     Coursera: 'SELECT course_name AS t FROM coursera_metrics',
     Udemy: 'SELECT title AS t FROM udemy_real_course_ids',
-    Go1: `SELECT DISTINCT name AS t FROM go1_courses
-          UNION SELECT DISTINCT course_name AS t FROM go1_course_history`,
+    Go1: GO1_LIVE_TITLES,
     FutureLearn: "SELECT title AS t FROM futurelearn_courses WHERE status = 'In progress'",
     LinkedIn: 'SELECT title AS t FROM linkedin_courses',
   };
@@ -2465,10 +2522,12 @@ const FEED_CATALOG = {
                        'https://www.futurelearn.com/courses/' || slug AS url, status AS status
                   FROM futurelearn_courses
                  WHERE status = 'In progress' AND visibility = 'Public'`,
-  // go1_courses is a MONTHLY ACTIVITY snapshot, not the catalogue — the union
-  // with the history is the catalogue. See readBatchCoverage.
-  Go1: `SELECT DISTINCT name AS title, NULL AS slug, NULL AS url, NULL AS status FROM go1_courses
-        UNION SELECT DISTINCT course_name, NULL, NULL, NULL FROM go1_course_history`,
+  // The Go1 catalogue itself, with each course's link and language. Go1 has
+  // no public course page; the link opens it for anyone signed in to Go1.
+  Go1: `SELECT title AS title, lo_id AS slug, url AS url, state AS status, language AS language
+          FROM go1_catalog WHERE type = 'interactive' AND state = 'published'
+        UNION SELECT name, NULL, NULL, NULL, NULL FROM go1_courses WHERE NOT EXISTS (SELECT 1 FROM go1_catalog)
+        UNION SELECT course_name, NULL, NULL, NULL, NULL FROM go1_course_history WHERE NOT EXISTS (SELECT 1 FROM go1_catalog)`,
   LinkedIn: `SELECT title AS title, NULL AS slug, NULL AS url, NULL AS status FROM linkedin_courses`,
 };
 

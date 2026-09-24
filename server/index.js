@@ -21,7 +21,7 @@ import {
   readCourseraCourseItems, searchCourseraItems, readCourseraInstructorProfiles,
   readBookmarks, addBookmark, removeBookmark,
   readCourseraCinCourses, readCourseraCinMetrics, readCourseraCinOverview,
-  readFutureLearnCourses, readLinkedInCourses, readGo1Courses, readGo1Lifetime, readEngagement,
+  readFutureLearnCourses, readLinkedInCourses, readGo1Courses, readGo1Lifetime, readGo1Catalog, readEngagement,
   readRevenueDashboard, readCourseRevenueAcrossPlatforms,
   readFreshness, readPlatformFreshness, rawQuery,
 } from './db.js';
@@ -477,6 +477,15 @@ app.get('/api/go1/courses', (req, res) => {
 
 // Go1 full-history totals, built by scraping every month back to when Go1
 // data starts and summing per course (no lifetime endpoint exists upstream).
+// The Go1 catalogue — every live course, with its language. The other Go1
+// routes are activity: they list only courses someone studied.
+app.get('/api/go1/catalog', (req, res) => {
+  const { items, scrapedAt } = readGo1Catalog();
+  const courses = items.filter((i) => i.type === 'interactive' && i.state === 'published');
+  const byLanguage = courses.reduce((a, c) => ((a[c.language || 'unknown'] = (a[c.language || 'unknown'] || 0) + 1), a), {});
+  res.json({ courses, playlists: items.filter((i) => i.type === 'playlist').length, byLanguage, scrapedAt });
+});
+
 app.get('/api/go1/lifetime', (req, res) => {
   res.json(readGo1Lifetime());
 });
@@ -825,7 +834,31 @@ app.get('/api/parent-tree', (req, res) => res.json(readParentRevenueTree()));
 // --- the feed other tools consume ----------------------------------------
 // Two stable shapes. Everything else here is shaped for this server's own
 // pages; these are an interface.
-app.get('/api/feed/catalog', (req, res) => res.json(readFeedCatalog(req.query.platform)));
+// UDEMY'S LIVE LIST COMES FROM UDEMY. The stored list (udemy_real_course_ids)
+// is scraped, and Udemy scraping is off, so it went stale both ways: it kept 22
+// courses that are not published and missed ones published since (2026-09-24).
+// The instructor API — an API key, not a scrape — says what is published now.
+// If that call fails the stored list is served instead, and the response says so.
+app.get('/api/feed/catalog', wrap(async (req, res) => {
+  const out = readFeedCatalog(req.query.platform);
+  if (req.query.platform && req.query.platform !== 'Udemy') return res.json(out);
+  try {
+    const live = (await walkAllCourses()).filter((c) => c.is_published && c.published_title);
+    if (!live.length) throw new Error('no published courses returned');
+    out.courses = [
+      ...out.courses.filter((c) => c.platform !== 'Udemy'),
+      ...live.map((c) => ({
+        platform: 'Udemy', title: c.title, slug: c.published_title,
+        url: `https://www.udemy.com${c.url || `/course/${c.published_title}/`}`, status: 'published',
+      })),
+    ];
+    out.total = out.courses.length;
+    out.udemySource = 'udemy-api';
+  } catch (e) {
+    out.udemySource = `stored list (Udemy API unavailable: ${e.message})`;
+  }
+  res.json(out);
+}));
 app.get('/api/feed/revenue', (req, res) => res.json(readFeedRevenue(req.query.platform)));
 // THE FINANCE PAGES LIVE IN THE PRIVATE ROYALTY REPO, beside this one, because
 // this repo is public and they are commercial data. They are still served from

@@ -49,6 +49,7 @@ export default function AppV2() {
   const [futurelearn, setFuturelearn] = useState([]);
   const [linkedin, setLinkedin] = useState({ courses: [], totals: { learners: 0, shares: 0, likes: 0 } });
   const [go1, setGo1] = useState({ courses: [], month: null });
+  const [go1Catalog, setGo1Catalog] = useState({ courses: [], byLanguage: {} });
   const [go1Lifetime, setGo1Lifetime] = useState({ courses: [], firstMonth: null, lastMonth: null, monthCount: 0 });
   const [conn, setConn] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
@@ -89,6 +90,7 @@ export default function AppV2() {
     fetch('/api/futurelearn/courses').then((r) => r.json()).then((d) => setFuturelearn(d.courses || [])).catch(() => {});
     fetch('/api/linkedin/courses').then((r) => r.json()).then((d) => setLinkedin({ courses: d.courses || [], totals: d.totals || { learners: 0, shares: 0, likes: 0 } })).catch(() => {});
     fetch('/api/go1/courses').then((r) => r.json()).then((d) => setGo1({ courses: d.courses || [], month: d.month || null })).catch(() => {});
+    fetch('/api/go1/catalog').then((r) => r.json()).then((d) => setGo1Catalog({ courses: d.courses || [], byLanguage: d.byLanguage || {} })).catch(() => {});
     fetch('/api/go1/lifetime').then((r) => r.json()).then((d) => setGo1Lifetime({ courses: d.courses || [], firstMonth: d.firstMonth || null, lastMonth: d.lastMonth || null, monthCount: d.monthCount || 0 })).catch(() => {});
     fetch('/api/engagement').then((r) => r.json()).then(setEngagement).catch(() => {});
   };
@@ -147,7 +149,7 @@ export default function AppV2() {
               <button key={k} className={'ptab' + (platform === k ? ' active' : '') + (k === 'coursera' || k === 'coursera_cin' ? ' p-coursera' : '')} onClick={() => setPlatform(k)}>{l}</button>
             ))}
           </div>
-          {view === 'overview' && <Overview udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} linkedin={linkedin} go1={go1.courses} go1Lifetime={go1Lifetime} totalRevenue={totalRevenue} platform={platform} monthly={monthly} engagement={engagement} />}
+          {view === 'overview' && <Overview udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} linkedin={linkedin} go1={go1.courses} go1Lifetime={go1Lifetime} go1Catalog={go1Catalog} totalRevenue={totalRevenue} platform={platform} monthly={monthly} engagement={engagement} />}
           {view === 'watchlist' && <Watchlist bookmarks={bookmarks} udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} linkedin={linkedin.courses} go1={go1Lifetime.courses.length ? go1Lifetime.courses : go1.courses} platform={platform} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} onOpen={setSelected} />}
           {view === 'courses' && (
             /* key by platform — both tabs render CourseraView, and without a
@@ -157,7 +159,7 @@ export default function AppV2() {
             : platform === 'coursera_cin' ? <CourseraView key="coursera_cin" rows={courseraCin} label="Coursera CIN" showInstructorCheck={false} reviewsBySlug={courseraCinReviews} platform="coursera_cin" isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'futurelearn' ? <FutureLearnView rows={futurelearn} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'linkedin' ? <LinkedInView data={linkedin} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
-            : platform === 'go1' ? <Go1View rows={go1.courses} month={go1.month} lifetime={go1Lifetime} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
+            : platform === 'go1' ? <Go1View rows={go1.courses} month={go1.month} lifetime={go1Lifetime} catalog={go1Catalog} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : <Courses udemy={udemy} totalRevenue={totalRevenue} onOpen={setSelected} onRefresh={load} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
           )}
           {view === 'earnings' && (platform === 'coursera'
@@ -191,7 +193,7 @@ export default function AppV2() {
 // ---------------- Overview ----------------
 const coursraPct = (c) => { const v = c.completionRate; return v == null ? null : (v <= 1 ? v * 100 : v); };
 
-function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go1Lifetime, totalRevenue, platform, monthly, engagement }) {
+function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go1Lifetime, go1Catalog = { courses: [] }, totalRevenue, platform, monthly, engagement }) {
   const isUdemy = platform === 'udemy';
   const isCoursera = platform === 'coursera';
   const isCourseraCin = platform === 'coursera_cin';
@@ -205,9 +207,13 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
   // of "All Platforms" totals entirely (it isn't part of Starweaver's own
   // teaching portfolio), only shown when its own tab is selected.
   const courCinStats = { count: courseraCin.length, enroll: courseraCin.reduce((s, c) => s + (c.enrollments || 0), 0) };
+  // LIVE means in progress AND public — the same test the catalogue feed uses.
+  // futurelearn.length counted drafts, finished runs and private runs too (204
+  // against 146 live on 2026-09-24).
+  const flLive = futurelearn.filter((c) => c.status === 'In progress' && (c.visibility == null || c.visibility === 'Public'));
   const flStats = {
-    count: futurelearn.length,
-    known: futurelearn.filter((c) => c.enrollment != null).length,
+    count: flLive.length,
+    known: flLive.filter((c) => c.enrollment != null).length,   // of the live ones, so "known N/M" compares like with like
     enroll: futurelearn.reduce((s, c) => s + (c.enrollment || 0), 0),
     live: futurelearn.filter((c) => c.status === 'In progress').length,
   };
@@ -215,7 +221,9 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
   // returns one month at a time — see scrapeGo1History.js). "month"/"monthEnroll" keep
   // the current-month figure around as a secondary reference point.
   const go1Stats = {
-    count: go1Lifetime.courses.length || go1.length,
+    // Courses ON Go1, from its catalogue — not the courses with learners, which
+    // is what the activity tables hold (145 against 182 live on 2026-09-24).
+    count: go1Catalog.courses.length || go1Lifetime.courses.length || go1.length,
     enroll: go1Lifetime.courses.reduce((s, c) => s + (c.enrolments || 0), 0),
     month: go1[0]?.month ?? null,
     monthEnroll: go1.reduce((s, c) => s + (c.enrolments || 0), 0),
@@ -229,6 +237,12 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
   const uAvg = rated.length ? rated.reduce((s, c) => s + Number(c.rating) * (c.num_reviews || 1), 0) / rated.reduce((s, c) => s + (c.num_reviews || 1), 0) : 0;
   const cAvg = cRated.length ? cRated.reduce((s, c) => s + Number(c.rating), 0) / cRated.length : 0;
   const cCinAvg = cCinRated.length ? cCinRated.reduce((s, c) => s + Number(c.rating), 0) / cCinRated.length : 0;
+  // Go1 DOES rate courses — the catalogue carries a five-star rating and how many
+  // ratings it rests on. Weighted by that count, as Udemy's is, so a course with
+  // one 5-star rating cannot outweigh one with a hundred at 4.2.
+  const go1Rated = (go1Catalog.courses || []).filter((c) => c.rating && c.ratingsCount);
+  const go1RatingCount = go1Rated.reduce((s, c) => s + c.ratingsCount, 0);
+  const go1Avg = go1RatingCount ? go1Rated.reduce((s, c) => s + c.rating * c.ratingsCount, 0) / go1RatingCount : 0;
   // LinkedIn Learning: the portal reports learners, shares and likes and
   // nothing else — no ratings, no revenue, no minutes.
   const liRows = (linkedin && linkedin.courses) || [];
@@ -243,9 +257,9 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
   const ubCount = udemy.filter((c) => c.is_udemy_business).length;
   const minutesWatched = engagement.totalMinutes != null ? Math.round(engagement.totalMinutes) : null;
 
-  const ratingValue = isCoursera ? cAvg : isCourseraCin ? cCinAvg : (isFutureLearn || isGo1 || isLinkedIn) ? null : uAvg;
+  const ratingValue = isCoursera ? cAvg : isCourseraCin ? cCinAvg : isGo1 ? (go1Avg || null) : (isFutureLearn || isLinkedIn) ? null : uAvg;
   const ratingTrend = isCoursera ? `across ${cRated.length} rated courses` : isCourseraCin ? `across ${cCinRated.length} rated courses`
-    : isFutureLearn ? 'not offered by FutureLearn' : isGo1 ? 'not offered by Go1'
+    : isFutureLearn ? 'not offered by FutureLearn' : isGo1 ? (go1Rated.length ? `across ${go1Rated.length} rated courses · ${num(go1RatingCount)} ratings` : 'no ratings yet')
     : isLinkedIn ? 'not exposed by the instructor portal'
     : isAll ? `Udemy only — based on ${num(reviews)} reviews` : `based on ${num(reviews)} reviews`;
   // Real per-course revenue, manually imported from partner revenue reports
@@ -890,7 +904,8 @@ function LinkedInView({ data, isBookmarked, toggleBookmark }) {
 // "Lifetime" scope here is built by scrapeGo1History.js scraping every month back
 // to when Go1 data starts and summing per course. "This Month" stays available as
 // a secondary reference since it's what changed most recently.
-function Go1View({ rows, month, lifetime, isBookmarked, toggleBookmark }) {
+const LANG_NAME = { en: 'English', es: 'Spanish', fr: 'French' };
+function Go1View({ rows, month, lifetime, catalog = { courses: [], byLanguage: {} }, isBookmarked, toggleBookmark }) {
   const [scope, setScope] = useState('lifetime');
   const [sort, setSort] = useState({ key: 'enrolments', dir: -1 });
   const [q, setQ] = useState('');
@@ -939,7 +954,12 @@ function Go1View({ rows, month, lifetime, isBookmarked, toggleBookmark }) {
         </div>}
       />
       <div className="kpi-grid">
-        <Kpi icon="📚" bg="#cce5ff" fg="#0066cc" label="Courses" value={num(allRows.length)} />
+        {/* Courses ON Go1 come from its catalogue. allRows are the courses with
+            learners in the chosen period, which is a different — smaller — number. */}
+        <Kpi icon="📚" bg="#cce5ff" fg="#0066cc" label="Courses on Go1" value={num(catalog.courses.length || allRows.length)}
+          trend={catalog.courses.length
+            ? Object.entries(catalog.byLanguage).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${v} ${LANG_NAME[k] || k}`).join(' · ') + ` · ${allRows.length} with learners`
+            : `${allRows.length} with learners`} />
         <Kpi icon="👥" bg="#cce5ff" fg="#0066cc" label={isLifetime ? 'Enrolments (lifetime)' : 'Enrolments (month)'} value={num(totE)} />
         <Kpi icon="🎓" bg="#dcfce7" fg="#10b981" label={isLifetime ? 'Completions (lifetime)' : 'Completions (month)'} value={num(totC)} />
       </div>
