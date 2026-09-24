@@ -1,5 +1,13 @@
 // Pulls ACTIVE coupons per course (not in the instructor API). Uses the connected
 // session + a HEADED browser. Endpoint: /api-2.0/courses/{numId}/coupons-v2/?invalid=false
+//
+// AND THE ONES THAT RAN OUT. Udemy moves a coupon to ?invalid=true the moment its
+// last redemption is taken, even though its dates still run — so asking for
+// valid coupons alone makes a used-up coupon vanish, and with it any sign the
+// course ever had one — a whole campaign that ran out between two scrapes was
+// never seen at all. Those are fetched too and stored with
+// status 'used_up'. Only USED UP ones: an expired coupon is simply over, and one
+// somebody switched off (is_active false) was a decision, not an outcome.
 // Writes to dashboard.db (courses table) via db.js's guarded writer — a run that
 // covers far fewer courses than last time is refused rather than wiping the table.
 // Run: npm run scrape:coupons   (a browser window opens — leave it)
@@ -67,30 +75,60 @@ while (true) {
   p2 += 1;
 }
 
+const shape = (x, status) => ({
+  code: x.code,
+  is_free: (x.discount_value ?? 0) === 0,
+  discount_value: x.discount_value,
+  max_uses: x.maximum_uses,
+  used: x.number_of_uses,
+  start: x.start_time,
+  end: x.end_time,
+  active: x.is_active,
+  status,
+});
+
+// A coupon Udemy calls invalid that is nonetheless still inside its dates, still
+// switched on, and at its cap. max_uses null means unlimited, which cannot run out.
+const isUsedUp = (x, now) => x.maximum_uses != null && x.number_of_uses >= x.maximum_uses
+  && x.is_active !== false && x.end_time && Date.parse(x.end_time) > now;
+
+// Newest end date first, because the invalid list is every coupon the course
+// ever had: sorted oldest-first, years of expired ones would push an in-date
+// used-up coupon off the first page. Paging stops at the first expired one.
+async function usedUpCoupons(numId) {
+  const now = Date.now();
+  const out = [];
+  let url = `https://www.udemy.com/api-2.0/courses/${numId}/coupons-v2/?invalid=true&ordering=-end_time&page_size=50`;
+  while (url) {
+    const d = await apiGet(url);
+    const page = d?.results || [];
+    out.push(...page.filter((x) => isUsedUp(x, now)));
+    const stillInDate = page.length && page.every((x) => x.end_time && Date.parse(x.end_time) > now);
+    url = stillInDate ? d.next || null : null;
+  }
+  return out.map((x) => shape(x, 'used_up'));
+}
+
 const perCourse = {};
 const quotaPerCourse = {};
-let done = 0, withCoupons = 0;
+let done = 0, withCoupons = 0, withUsedUp = 0, usedUpTotal = 0;
 for (const c of courses) {
   const data = await apiGet(`https://www.udemy.com/api-2.0/courses/${c.numId}/coupons-v2/?invalid=false&ordering=end_time,-created&page_size=50`);
-  const list = (data?.results || []).map((x) => ({
-    code: x.code,
-    is_free: (x.discount_value ?? 0) === 0,
-    discount_value: x.discount_value,
-    max_uses: x.maximum_uses,
-    used: x.number_of_uses,
-    start: x.start_time,
-    end: x.end_time,
-    active: x.is_active,
-  }));
+  const live = (data?.results || []).map((x) => shape(x, 'live'));
+  const liveCodes = new Set(live.map((x) => x.code));
+  // A code can only be one or the other; if Udemy ever lists it both ways, live wins.
+  const usedUp = (await usedUpCoupons(c.numId)).filter((x) => !liveCodes.has(x.code));
+  const list = [...live, ...usedUp];
   const meta = await apiGet(`https://www.udemy.com/api-2.0/courses/${c.numId}/coupons-v2/meta/`);
   const id = c.slug && slugToId[c.slug];
   if (id) {
     perCourse[id] = list;
     if (meta?.remaining_coupon_count != null) quotaPerCourse[id] = meta.remaining_coupon_count;
   }
-  if (list.length) withCoupons++;
+  if (live.length) withCoupons++;
+  if (usedUp.length) { withUsedUp++; usedUpTotal += usedUp.length; }
   done++;
-  process.stdout.write(`\r  ${done}/${courses.length} · ${withCoupons} with active coupons`);
+  process.stdout.write(`\r  ${done}/${courses.length} · ${withCoupons} with active coupons · ${withUsedUp} with a used-up one`);
   await sleep(1000 + Math.floor(Math.random() * 800));
 }
 process.stdout.write('\n');
@@ -98,9 +136,9 @@ await browser.close();
 
 const result = writeCoupons(perCourse);
 writeCouponQuota(quotaPerCourse);
-const totalCoupons = Object.values(perCourse).reduce((s, l) => s + l.length, 0);
+const totalCoupons = Object.values(perCourse).reduce((s, l) => s + l.filter((x) => x.status === 'live').length, 0);
 if (result.guarded) {
   console.error(`⚠️ Refused to write — only ${Object.keys(perCourse).length} courses covered, looks like a partial/failed run. Kept existing data. Re-run after reconnecting.`);
   process.exit(1);
 }
-console.log(`✅ ${withCoupons} courses have active coupons (${totalCoupons} total) · quota checked for ${Object.keys(quotaPerCourse).length} courses → dashboard.db`);
+console.log(`✅ ${withCoupons} courses have active coupons (${totalCoupons} total) · ${usedUpTotal} used up on ${withUsedUp} courses · quota checked for ${Object.keys(quotaPerCourse).length} courses → dashboard.db`);

@@ -7,8 +7,10 @@ import ConnectUdemy from '../ConnectUdemy.jsx';
 import ConnectCoursera from '../ConnectCoursera.jsx';
 import ConnectFutureLearn from '../ConnectFutureLearn.jsx';
 import ConnectGo1 from '../ConnectGo1.jsx';
+import ConnectLinkedIn from '../ConnectLinkedIn.jsx';
 import { BarChart, Donut, Histogram, LineChart, ChartPlaceholder } from './charts.jsx';
-import { enrich, classifyDomain, DOMAIN_COLOR, capNames, usd, exportCsv, exportMinutesCsv, exportCourseraCsv, exportFutureLearnCsv, exportGo1Csv, exportWatchlistCsv, applyFilter, parseSmartQuery } from './data.js';
+import { enrich, classifyDomain, DOMAIN_COLOR, capNames, usd, exportCsv, exportMinutesCsv, exportCourseraCsv, exportFutureLearnCsv, exportLinkedInCsv, exportGo1Csv, exportWatchlistCsv, applyFilter, parseSmartQuery, FILTER_FIELDS } from './data.js';
+import FilterBuilder, { specOf, describe } from './FilterBuilder.jsx';
 
 const num = (n) => (n == null ? '—' : Math.round(n).toLocaleString());
 const relTime = (iso) => {
@@ -45,10 +47,13 @@ export default function AppV2() {
   const [courseraReviews, setCourseraReviews] = useState({});
   const [courseraCinReviews, setCourseraCinReviews] = useState({});
   const [futurelearn, setFuturelearn] = useState([]);
+  const [linkedin, setLinkedin] = useState({ courses: [], totals: { learners: 0, shares: 0, likes: 0 } });
   const [go1, setGo1] = useState({ courses: [], month: null });
   const [go1Lifetime, setGo1Lifetime] = useState({ courses: [], firstMonth: null, lastMonth: null, monthCount: 0 });
   const [conn, setConn] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
+  const [lastRun, setLastRun] = useState(null);
+  const [freshness, setFreshness] = useState(null);
   const [view, setView] = useState('overview');
   const [platform, setPlatform] = useState('all');
   const [selected, setSelected] = useState(null);
@@ -70,7 +75,8 @@ export default function AppV2() {
   const load = () => {
     fetch('/api/courses').then((r) => r.json()).then(setRaw).catch(() => setRaw({ results: [] }));
     fetch('/api/connection').then((r) => r.json()).then(setConn).catch(() => {});
-    fetch('/api/last-update').then((r) => r.json()).then((d) => setLastUpdate(d.updatedAt)).catch(() => {});
+    fetch('/api/last-update').then((r) => r.json()).then((d) => { setLastUpdate(d.updatedAt); setLastRun(d.lastRun || null); }).catch(() => {});
+    fetch('/api/freshness').then((r) => r.json()).then(setFreshness).catch(() => {});
     loadBookmarks();
     fetch('/api/coursera/metrics').then((r) => r.json()).then((d) => {
       setCoursera(d.courses || d.results || []);
@@ -81,6 +87,7 @@ export default function AppV2() {
     fetch('/api/coursera-cin/reviews').then((r) => r.json()).then((d) => setCourseraCinReviews(d.bySlug || {})).catch(() => {});
     fetch('/api/revenue/monthly').then((r) => r.json()).then((d) => setMonthly(d.monthly || [])).catch(() => {});
     fetch('/api/futurelearn/courses').then((r) => r.json()).then((d) => setFuturelearn(d.courses || [])).catch(() => {});
+    fetch('/api/linkedin/courses').then((r) => r.json()).then((d) => setLinkedin({ courses: d.courses || [], totals: d.totals || { learners: 0, shares: 0, likes: 0 } })).catch(() => {});
     fetch('/api/go1/courses').then((r) => r.json()).then((d) => setGo1({ courses: d.courses || [], month: d.month || null })).catch(() => {});
     fetch('/api/go1/lifetime').then((r) => r.json()).then((d) => setGo1Lifetime({ courses: d.courses || [], firstMonth: d.firstMonth || null, lastMonth: d.lastMonth || null, monthCount: d.monthCount || 0 })).catch(() => {});
     fetch('/api/engagement').then((r) => r.json()).then(setEngagement).catch(() => {});
@@ -90,6 +97,9 @@ export default function AppV2() {
   const udemy = useMemo(() => (raw?.results || []).filter((c) => c.is_published).map(enrich), [raw]);
   const totalRevenue = raw?.total_revenue ?? null;
 
+  const runFailures = ((lastRun && lastRun.results) || []).filter((r) => r.ok === false);
+  const staleList = Object.entries(freshness || {}).filter(([, v]) => v.oldest && v.oldest.ageDays > STALE_DAYS);
+  const staleCount = staleList.length;
   if (!raw) return <div className="dcx"><div className="center-note">Loading your dashboard…</div></div>;
   const go = (v) => { setView(v); setSideOpen(false); };
 
@@ -97,7 +107,7 @@ export default function AppV2() {
     <div className={'dcx' + (dark ? ' dark' : '')}>
       <div className="dashboard">
         <aside className={'sidebar' + (sideOpen ? ' open' : '')}>
-          <div className="logo"><span className="dot" /> Instructor Hub</div>
+          <div className="logo"><span className="dot" /> Distribution Dashboard</div>
           <div className="nav-section">
             <div className="nav-label">Main</div>
             {NAV.map(([k, l]) => (
@@ -108,18 +118,37 @@ export default function AppV2() {
             <div className="nav-label">Tools</div>
             <div className={'nav-item' + (view === 'settings' ? ' active' : '')} onClick={() => go('settings')}>{ICONS.settings}<span>Settings</span></div>
           </div>
-          <div className="side-foot">Last updated {relTime(lastUpdate)}</div>
+          <div className="side-foot">
+            {/* "Last updated 3h ago" used to be the NEWEST table anywhere, which is
+                how every Udemy figure sat 34 days old under a sidebar calling the
+                data fresh. It now names what is fresh and counts what is not. */}
+            Last update run {relTime(lastRun?.finishedAt || lastUpdate)}
+            {staleCount > 0 && (
+              <div className="run-warn" onClick={() => go('settings')} title={staleList.map(([p, v]) => `${PLATFORM_NAMES[p]}: ${v.oldest.ageDays} days`).join('\n')}>
+                ⏳ {staleCount} platform{staleCount > 1 ? 's' : ''} with data over {STALE_DAYS} days old
+              </div>
+            )}
+            {runFailures.length > 0 && (
+              /* A run where most steps failed used to look identical to a clean
+                 one: the guards refused the bad writes, the timestamps stayed
+                 old, and the sidebar just said "4h ago". Say it out loud. */
+              <div className="run-warn" onClick={() => go('settings')} title={runFailures.map((r) => r.name).join(', ')}>
+                ⚠ {runFailures.length} step{runFailures.length > 1 ? 's' : ''} failed in the last update
+              </div>
+            )}
+          </div>
         </aside>
 
         <main className="main-content">
           <button className="btn btn-secondary menu-btn" style={{ marginBottom: 16 }} onClick={() => setSideOpen((o) => !o)}>☰ Menu</button>
+          {view !== 'settings' && <StaleBanner freshness={freshness} platform={platform} />}
           <div className="platform-tabs">
-            {[['all', 'All Platforms'], ['udemy', 'Udemy'], ['coursera', 'Coursera'], ['coursera_cin', 'Coursera CIN'], ['futurelearn', 'FutureLearn'], ['go1', 'Go1']].map(([k, l]) => (
+            {[['all', 'All Platforms'], ['udemy', 'Udemy'], ['coursera', 'Coursera'], ['coursera_cin', 'Coursera CIN'], ['futurelearn', 'FutureLearn'], ['linkedin', 'LinkedIn'], ['go1', 'Go1']].map(([k, l]) => (
               <button key={k} className={'ptab' + (platform === k ? ' active' : '') + (k === 'coursera' || k === 'coursera_cin' ? ' p-coursera' : '')} onClick={() => setPlatform(k)}>{l}</button>
             ))}
           </div>
-          {view === 'overview' && <Overview udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} go1={go1.courses} go1Lifetime={go1Lifetime} totalRevenue={totalRevenue} platform={platform} monthly={monthly} engagement={engagement} />}
-          {view === 'watchlist' && <Watchlist bookmarks={bookmarks} udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} go1={go1Lifetime.courses.length ? go1Lifetime.courses : go1.courses} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} onOpen={setSelected} />}
+          {view === 'overview' && <Overview udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} linkedin={linkedin} go1={go1.courses} go1Lifetime={go1Lifetime} totalRevenue={totalRevenue} platform={platform} monthly={monthly} engagement={engagement} />}
+          {view === 'watchlist' && <Watchlist bookmarks={bookmarks} udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} linkedin={linkedin.courses} go1={go1Lifetime.courses.length ? go1Lifetime.courses : go1.courses} platform={platform} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} onOpen={setSelected} />}
           {view === 'courses' && (
             /* key by platform — both tabs render CourseraView, and without a
                distinct key React reuses the instance and carries the search
@@ -127,6 +156,7 @@ export default function AppV2() {
             platform === 'coursera' ? <CourseraView key="coursera" rows={coursera} quarters={courseraQuarters} reviewsBySlug={courseraReviews} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'coursera_cin' ? <CourseraView key="coursera_cin" rows={courseraCin} label="Coursera CIN" showInstructorCheck={false} reviewsBySlug={courseraCinReviews} platform="coursera_cin" isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'futurelearn' ? <FutureLearnView rows={futurelearn} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
+            : platform === 'linkedin' ? <LinkedInView data={linkedin} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'go1' ? <Go1View rows={go1.courses} month={go1.month} lifetime={go1Lifetime} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : <Courses udemy={udemy} totalRevenue={totalRevenue} onOpen={setSelected} onRefresh={load} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
           )}
@@ -138,17 +168,19 @@ export default function AppV2() {
             ? <PlatformUnavailable platform={platform} title="Earnings" note="FutureLearn doesn't expose partner revenue — earnings tracking is Udemy-only." />
             : platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Earnings" note="Your Go1 account doesn't have revenue reporting available yet — earnings tracking is Udemy-only." />
+            : platform === 'linkedin'
+            ? <PlatformUnavailable platform={platform} title="Earnings" note="The LinkedIn Learning instructor portal exposes no revenue at all — only learners, shares and likes." />
             : <Earnings udemy={udemy} totalRevenue={totalRevenue} monthly={monthly} platform={platform} coursera={coursera} />)}
-          {view === 'minutes' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'go1'
+          {view === 'minutes' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Minutes" note="Minutes-consumed tracking is a Udemy feature — this platform's courses aren't covered here." />
             : <MinutesReport udemy={udemy} />)}
-          {view === 'captions' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'go1'
+          {view === 'captions' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Captions" note="Caption localization is a Udemy feature — this platform's courses aren't covered here." />
             : <Captions udemy={udemy} onRefresh={load} />)}
-          {view === 'coupons' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'go1'
+          {view === 'coupons' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Coupons" note="Coupon tracking is a Udemy feature — this platform doesn't have promotional codes tracked here." />
             : <Coupons udemy={udemy} />)}
-          {view === 'settings' && <Settings conn={conn} dark={dark} setDark={setDark} lastUpdate={lastUpdate} onRefresh={load} />}
+          {view === 'settings' && <Settings conn={conn} dark={dark} setDark={setDark} lastUpdate={lastUpdate} lastRun={lastRun} onRefresh={load} />}
         </main>
       </div>
       {selected && <CourseDetail course={selected} onClose={() => setSelected(null)} />}
@@ -159,11 +191,12 @@ export default function AppV2() {
 // ---------------- Overview ----------------
 const coursraPct = (c) => { const v = c.completionRate; return v == null ? null : (v <= 1 ? v * 100 : v); };
 
-function Overview({ udemy, coursera, courseraCin, futurelearn, go1, go1Lifetime, totalRevenue, platform, monthly, engagement }) {
+function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go1Lifetime, totalRevenue, platform, monthly, engagement }) {
   const isUdemy = platform === 'udemy';
   const isCoursera = platform === 'coursera';
   const isCourseraCin = platform === 'coursera_cin';
   const isFutureLearn = platform === 'futurelearn';
+  const isLinkedIn = platform === 'linkedin';
   const isGo1 = platform === 'go1';
   const isAll = platform === 'all';
 
@@ -196,18 +229,24 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, go1, go1Lifetime,
   const uAvg = rated.length ? rated.reduce((s, c) => s + Number(c.rating) * (c.num_reviews || 1), 0) / rated.reduce((s, c) => s + (c.num_reviews || 1), 0) : 0;
   const cAvg = cRated.length ? cRated.reduce((s, c) => s + Number(c.rating), 0) / cRated.length : 0;
   const cCinAvg = cCinRated.length ? cCinRated.reduce((s, c) => s + Number(c.rating), 0) / cCinRated.length : 0;
-  const courses = isUdemy ? udemy.length : isCoursera ? courStats.count : isCourseraCin ? courCinStats.count : isFutureLearn ? flStats.count : isGo1 ? go1Stats.count
+  // LinkedIn Learning: the portal reports learners, shares and likes and
+  // nothing else — no ratings, no revenue, no minutes.
+  const liRows = (linkedin && linkedin.courses) || [];
+  const liTotals = (linkedin && linkedin.totals) || { learners: 0, shares: 0, likes: 0 };
+  const liStats = { count: liRows.length, enroll: liTotals.learners || 0 };
+  const courses = isUdemy ? udemy.length : isCoursera ? courStats.count : isCourseraCin ? courCinStats.count : isFutureLearn ? flStats.count : isLinkedIn ? liStats.count : isGo1 ? go1Stats.count
     : udemy.length + courStats.count + flStats.count + go1Stats.count;
-  const enroll = isUdemy ? uEnroll : isCoursera ? courStats.enroll : isCourseraCin ? courCinStats.enroll : isFutureLearn ? flStats.enroll : isGo1 ? go1Stats.enroll
+  const enroll = isUdemy ? uEnroll : isCoursera ? courStats.enroll : isCourseraCin ? courCinStats.enroll : isFutureLearn ? flStats.enroll : isLinkedIn ? liStats.enroll : isGo1 ? go1Stats.enroll
     : uEnroll + courStats.enroll + flStats.enroll + go1Stats.enroll;
   const withPaul = udemy.filter((c) => c.hasPaul).length;
   const finGap = udemy.filter((c) => c.isFinance && !c.hasGlobecon).length;
   const ubCount = udemy.filter((c) => c.is_udemy_business).length;
   const minutesWatched = engagement.totalMinutes != null ? Math.round(engagement.totalMinutes) : null;
 
-  const ratingValue = isCoursera ? cAvg : isCourseraCin ? cCinAvg : (isFutureLearn || isGo1) ? null : uAvg;
+  const ratingValue = isCoursera ? cAvg : isCourseraCin ? cCinAvg : (isFutureLearn || isGo1 || isLinkedIn) ? null : uAvg;
   const ratingTrend = isCoursera ? `across ${cRated.length} rated courses` : isCourseraCin ? `across ${cCinRated.length} rated courses`
     : isFutureLearn ? 'not offered by FutureLearn' : isGo1 ? 'not offered by Go1'
+    : isLinkedIn ? 'not exposed by the instructor portal'
     : isAll ? `Udemy only — based on ${num(reviews)} reviews` : `based on ${num(reviews)} reviews`;
   // Real per-course revenue, manually imported from partner revenue reports
   // (Coursera exposes none via any API) — covers only the courses present in
@@ -218,17 +257,33 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, go1, go1Lifetime,
   const courseraCinRevenueCount = courseraCin.filter((c) => c.revenue != null).length;
   const revenueValue = isCoursera ? (courseraRevenueCount ? usd(courseraRevenueTotal) : '—')
     : isCourseraCin ? (courseraCinRevenueCount ? usd(courseraCinRevenueTotal) : '—')
-    : (isFutureLearn || isGo1) ? '—'
+    : (isFutureLearn || isGo1 || isLinkedIn) ? '—'
     : isAll ? ((totalRevenue == null && !courseraRevenueCount) ? '—' : usd((totalRevenue || 0) + courseraRevenueTotal))
     : (totalRevenue == null ? '—' : usd(totalRevenue));
   const revenueTrend = isCoursera ? (courseraRevenueCount ? `from manually imported report — ${courseraRevenueCount}/${coursera.length} courses` : 'not tracked for Coursera')
     : isCourseraCin ? (courseraCinRevenueCount ? `from manually imported report — ${courseraCinRevenueCount}/${courseraCin.length} courses` : 'not tracked for Coursera CIN')
     : isFutureLearn ? 'not exposed to partners' : isGo1 ? 'not yet available'
+    : isLinkedIn ? 'no revenue in the instructor portal'
     : isAll ? `Udemy + Coursera (${courseraRevenueCount}/${coursera.length} courses) — FutureLearn/Go1 not tracked`
     : 'Udemy earnings';
 
   let charts;
-  if (isFutureLearn) {
+  if (isLinkedIn) {
+    const top = [...liRows].sort((a, b) => (b.learners || 0) - (a.learners || 0)).slice(0, 8)
+      .map((c) => ({ label: c.title, value: c.learners || 0, color: '#0a66c2' }));
+    const byLang = {};
+    liRows.forEach((c) => { byLang[c.language || 'Unknown'] = (byLang[c.language || 'Unknown'] || 0) + 1; });
+    const langDonut = Object.entries(byLang).map(([label, value], i) =>
+      ({ label, value, color: ['#0a66c2', '#0c9bae', '#ea7112', '#002fa7', '#9ca3af'][i % 5] }));
+    charts = (
+      <div className="chart-grid">
+        <div className="chart-card"><div className="section-title">Top courses by learners</div>
+          {top.length ? <BarChart data={top} /> : <ChartPlaceholder />}</div>
+        <div className="chart-card"><div className="section-title">Courses by language</div>
+          {langDonut.length ? <Donut data={langDonut} /> : <ChartPlaceholder />}</div>
+      </div>
+    );
+  } else if (isFutureLearn) {
     const statusCounts = {};
     futurelearn.forEach((c) => { statusCounts[c.status || 'Unknown'] = (statusCounts[c.status || 'Unknown'] || 0) + 1; });
     const statusDonut = Object.entries(statusCounts).map(([label, value]) => ({ label, value, color: label === 'In progress' ? '#0c9bae' : label === 'Draft' ? '#ea7112' : '#002fa7' }));
@@ -419,6 +474,31 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, go1, go1Lifetime,
   );
 }
 
+// ONE FILTER PER TABLE. Held here rather than inside FilterBuilder so the
+// table can read the spec while the menu is shut — closing the panel must not
+// drop the filter, and a filter you cannot see is the reason the active
+// conditions are always printed above the rows.
+function useColumnFilter(platformKey) {
+  const fields = FILTER_FIELDS[platformKey];
+  const [conditions, setConditions] = useState([]);
+  const [combinator, setCombinator] = useState('AND');
+  const spec = useMemo(() => specOf(conditions, combinator, fields), [conditions, combinator, fields]);
+  return { fields, conditions, setConditions, combinator, setCombinator, spec };
+}
+// What is being hidden, in words, with one click to undo it. A table quietly
+// showing 40 of 320 rows is how somebody reads a filtered total as the truth.
+function ActiveFilter({ f, shown, total }) {
+  if (!f.spec) return null;
+  return (
+    <div className="table-header" style={{ paddingTop: 0, gap: 8 }}>
+      <span className="pill filter-chip">
+        ⛃ {describe(f.conditions, f.combinator, f.fields)}
+        <span onClick={() => f.setConditions([])} className="filter-chip-x" title="Clear the filter">✕</span>
+      </span>
+      <span className="muted">{shown} of {total} rows</span>
+    </div>
+  );
+}
 const PLATFORM_LABELS = { coursera: 'Coursera', coursera_cin: 'Coursera CIN', futurelearn: 'FutureLearn', go1: 'Go1' };
 function PlatformUnavailable({ title, note, platform }) {
   return (
@@ -498,16 +578,20 @@ function ColumnPicker({ visible, setVisible }) {
 // "N active · M left" — "left" is Udemy's rolling monthly creation allowance
 // (remaining_coupon_count: resets monthly, not a fixed lifetime cap).
 function couponFraction(c) {
-  if (!Array.isArray(c.coupons)) return <span className="muted">—</span>;
-  const active = c.coupons.length;
-  if (c.remaining_coupon_count == null) return active || '0';
-  return <span title="Left = more coupons Udemy will let you create this month on this course">{active} active · {c.remaining_coupon_count} left</span>;
+  const gone = (c.coupons_used_up || []).length;
+  if (!Array.isArray(c.coupons) && !gone) return <span className="muted">—</span>;
+  const active = (c.coupons || []).length;
+  // A course whose only coupon ran out used to read "—", as if it never had one.
+  const usedUp = gone ? <span style={{ color: '#dc2626' }} title={`Used up: ${c.coupons_used_up.map((x) => x.code).join(', ')}`}> · {gone} used up</span> : null;
+  if (c.remaining_coupon_count == null) return <>{active || '0'}{usedUp}</>;
+  return <span title="Left = more coupons Udemy will let you create this month on this course">{active} active · {c.remaining_coupon_count} left{usedUp}</span>;
 }
 function Courses({ udemy, totalRevenue, onOpen, onRefresh, isBookmarked, toggleBookmark }) {
   const [q, setQ] = useState('');
   const [domain, setDomain] = useState('All');
   const [sort, setSort] = useState({ key: 'num_reviews', dir: -1 });
   const [visibleCols, setVisibleCols] = useState(loadVisibleCols);
+  const f = useColumnFilter('udemy');
   const domains = useMemo(() => ['All', ...[...new Set(udemy.map((c) => c.domain))].sort()], [udemy]);
   const searchSpec = useMemo(() => parseSmartQuery(q), [q]);
   const clearSearch = () => setQ('');
@@ -518,6 +602,7 @@ function Courses({ udemy, totalRevenue, onOpen, onRefresh, isBookmarked, toggleB
     let r = udemy;
     if (domain !== 'All') r = r.filter((c) => c.domain === domain);
     r = applyFilter(r, searchSpec);
+    r = applyFilter(r, f.spec, f.fields);
     const col = COLS.find((c) => c[0] === sort.key);
     return [...r].sort((a, b) => {
       let av = a[sort.key], bv = b[sort.key];
@@ -525,7 +610,7 @@ function Courses({ udemy, totalRevenue, onOpen, onRefresh, isBookmarked, toggleB
       if (Array.isArray(av)) av = av.length; if (Array.isArray(bv)) bv = bv.length;
       return sort.dir * ((Number(av) || 0) - (Number(bv) || 0));
     });
-  }, [udemy, searchSpec, domain, sort]);
+  }, [udemy, searchSpec, domain, sort, f.spec, f.fields]);
   const th = ([key, label, type]) => (
     <th key={key} className={type === 'none' ? 'no-sort' : ''} onClick={() => type !== 'none' && setSort((s) => ({ key, dir: s.key === key ? -s.dir : -1 }))}>
       {label}{sort.key === key ? (sort.dir < 0 ? ' ↓' : ' ↑') : ''}
@@ -550,9 +635,11 @@ function Courses({ udemy, totalRevenue, onOpen, onRefresh, isBookmarked, toggleB
             onKeyDown={(e) => { if (e.key === 'Escape') clearSearch(); }}
           />
           <select value={domain} onChange={(e) => setDomain(e.target.value)} style={{ width: 'auto', minWidth: 180 }}>{domains.map((d) => <option key={d}>{d}</option>)}</select>
+          <FilterBuilder {...f} rows={udemy} />
           <ColumnPicker visible={visibleCols} setVisible={setVisibleCols} />
           <span className="muted">{rows.length} shown</span>
         </div>
+        <ActiveFilter f={f} shown={rows.length} total={udemy.length} />
         {searchSpec?.conditions.some((c) => c.field !== 'title') && (
           <div className="table-header" style={{ paddingTop: 0, gap: 8 }}>
             <span className="pill" style={{ background: '#eef2ff', color: '#4f46e5' }}>
@@ -596,12 +683,13 @@ function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, re
   const [q, setQ] = useState('');
   const pct = (r) => (r == null ? '—' : (r <= 1 ? Math.round(r * 100) : Math.round(r)) + '%');
   // search across the fields actually shown in the table, so a hit is visible
+  const f = useColumnFilter('coursera');
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return rows;
-    return rows.filter((c) => [c.name, c.domain, c.status, ...(c.instructorNames || [])]
+    const bySearch = !s ? rows : rows.filter((c) => [c.name, c.domain, c.status, ...(c.instructorNames || [])]
       .some((v) => String(v || '').toLowerCase().includes(s)));
-  }, [rows, q]);
+    return applyFilter(bySearch, f.spec, f.fields);
+  }, [rows, q, f.spec, f.fields]);
   // Quarter columns sort on `q<index>`, which lives inside the quarterlyRevenue
   // array rather than being a field of its own.
   const val = (c, key) => (/^q\d+$/.test(key) ? c.quarterlyRevenue?.[Number(key.slice(1))] : c[key]);
@@ -631,8 +719,10 @@ function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, re
         <div className="table-header">
           <input className="table-search" placeholder="Search course, domain, status or instructor…" value={q}
             onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setQ(''); }} />
+          <FilterBuilder {...f} rows={rows} />
           <span className="muted">{data.length === rows.length ? `${rows.length} courses` : `${data.length} of ${rows.length}`}</span>
         </div>
+        <ActiveFilter f={f} shown={data.length} total={rows.length} />
         <div className="table-scroll"><table>
         <thead><tr><th className="no-sort"></th>{th('name', 'Course', 'left')}{th('domain', 'Domain', 'left')}{th('status', 'Status', 'center')}{th('enrollments', 'Enrollments')}{th('completions', 'Completions')}{th('completionRate', 'Compl. Rate')}{th('rating', 'Rating')}<th className="no-sort">Reviews</th>{th('revenue', 'Revenue')}{quarters.map((qt, qi) => <th key={qt} style={{ textAlign: 'right' }} onClick={() => setSort((s) => ({ key: `q${qi}`, dir: s.key === `q${qi}` ? -s.dir : -1 }))}>{qt}{sort.key === `q${qi}` ? (sort.dir < 0 ? ' \u2193' : ' \u2191') : ''}</th>)}{showInstructorCheck && <th className="no-sort">Instructor</th>}{showInstructorCheck && th('instructorNames', 'Instructor Names', 'left')}</tr></thead>
         <tbody>
@@ -671,12 +761,13 @@ function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, re
 function FutureLearnView({ rows, isBookmarked, toggleBookmark }) {
   const [sort, setSort] = useState({ key: 'enrollment', dir: -1 });
   const [q, setQ] = useState('');
+  const f = useColumnFilter('futurelearn');
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return rows;
-    return rows.filter((c) => [c.title, c.code, c.category, c.status]
+    const bySearch = !s ? rows : rows.filter((c) => [c.title, c.code, c.category, c.status]
       .some((v) => String(v || '').toLowerCase().includes(s)));
-  }, [rows, q]);
+    return applyFilter(bySearch, f.spec, f.fields);
+  }, [rows, q, f.spec, f.fields]);
   const data = useMemo(() => [...filtered].sort((a, b) => {
     const av = a[sort.key], bv = b[sort.key];
     if (sort.key === 'title' || sort.key === 'category' || sort.key === 'status') return sort.dir * String(av || '').localeCompare(String(bv || ''));
@@ -698,8 +789,10 @@ function FutureLearnView({ rows, isBookmarked, toggleBookmark }) {
         <div className="table-header">
           <input className="table-search" placeholder="Search course, code, category or status…" value={q}
             onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setQ(''); }} />
+          <FilterBuilder {...f} rows={rows} />
           <span className="muted">{data.length === rows.length ? `${rows.length} courses` : `${data.length} of ${rows.length}`}</span>
         </div>
+        <ActiveFilter f={f} shown={data.length} total={rows.length} />
         <div className="table-scroll"><table>
           <thead><tr><th className="no-sort"></th>{th('title', 'Course', 'left')}{th('code', 'Code', 'left')}{th('category', 'Category', 'left')}{th('status', 'Status')}<th className="no-sort">Start date</th>{th('wishlistCount', 'Wishlist')}{th('enrollment', 'Enrollment')}</tr></thead>
           <tbody>
@@ -722,6 +815,76 @@ function FutureLearnView({ rows, isBookmarked, toggleBookmark }) {
   );
 }
 
+// ---------------- LinkedIn Learning ----------------
+// The instructor portal's all-courses table is the only view that lists every
+// course at once, and it carries just these five fields. Watch time, completion
+// rate and demographics exist only on each course's own Analytics page, one page
+// per course, so they are absent here by nature rather than by omission.
+function LinkedInView({ data, isBookmarked, toggleBookmark }) {
+  const rows = data.courses || [];
+  const [sort, setSort] = useState({ key: 'learners', dir: -1 });
+  const [q, setQ] = useState('');
+  const f = useColumnFilter('linkedin');
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    const bySearch = !s ? rows : rows.filter((c) => [c.title, c.language].some((v) => String(v || '').toLowerCase().includes(s)));
+    return applyFilter(bySearch, f.spec, f.fields);
+  }, [rows, q, f.spec, f.fields]);
+  const sorted = useMemo(() => [...filtered].sort((a, b) => {
+    const av = a[sort.key], bv = b[sort.key];
+    if (sort.key === 'title' || sort.key === 'language' || sort.key === 'lastUpdated') {
+      return sort.dir * String(av || '').localeCompare(String(bv || ''));
+    }
+    return sort.dir * ((Number(av) || 0) - (Number(bv) || 0));
+  }), [filtered, sort]);
+
+  if (!rows.length) {
+    return (<><Header crumb="COURSES · LINKEDIN" title="LinkedIn Learning" sub="Instructor-portal analytics" />
+      <div className="table-card"><div style={{ padding: 24 }} className="muted">
+        No LinkedIn Learning courses cached. Connect LinkedIn in Settings, then run <code>node scrapeLinkedInCourses.js</code>.
+      </div></div></>);
+  }
+
+  const t = data.totals || { learners: 0, shares: 0, likes: 0 };
+  const th = (key, label, align = 'right') => <th key={key} style={{ textAlign: align }} onClick={() => setSort((s) => ({ key, dir: s.key === key ? -s.dir : -1 }))}>{label}{sort.key === key ? (sort.dir < 0 ? ' ↓' : ' ↑') : ''}</th>;
+  return (
+    <>
+      <Header crumb="COURSES · LINKEDIN" title="LinkedIn Learning" sub="Published as Starweaver Group, Inc. Licensor. Watch time and completion are not exposed at this level." actions={<button className="btn btn-secondary" onClick={() => exportLinkedInCsv(sorted)}>⬇ Export CSV</button>} />
+      <div className="kpi-grid">
+        <Kpi icon="📚" bg="#e0e7ff" fg="#0a66c2" label="Courses" value={num(rows.length)} />
+        <Kpi icon="👥" bg="#e0e7ff" fg="#0a66c2" label="Learners" value={num(t.learners)} />
+        <Kpi icon="🔁" bg="#e0e7ff" fg="#0a66c2" label="Shares" value={num(t.shares)} />
+        <Kpi icon="👍" bg="#e0e7ff" fg="#0a66c2" label="Likes" value={num(t.likes)} />
+      </div>
+      <div className="table-card">
+        <div className="table-header">
+          <input className="table-search" placeholder="Search course or language…" value={q}
+            onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setQ(''); }} />
+          <FilterBuilder {...f} rows={rows} />
+          <span className="muted">{sorted.length === rows.length ? `${rows.length} courses` : `${sorted.length} of ${rows.length}`}</span>
+        </div>
+        <ActiveFilter f={f} shown={sorted.length} total={rows.length} />
+        <div className="table-scroll"><table>
+          <thead><tr><th className="no-sort"></th>{th('title', 'Course', 'left')}{th('language', 'Language', 'left')}{th('learners', 'Learners')}{th('shares', 'Shares')}{th('likes', 'Likes')}{th('lastUpdated', 'Last updated', 'left')}</tr></thead>
+          <tbody>
+            {sorted.map((c) => (
+              <tr key={c.title}>
+                <td><BookmarkButton active={isBookmarked('linkedin', c.title)} onClick={() => toggleBookmark('linkedin', c.title, c.title)} /></td>
+                <td style={{ fontWeight: 500, minWidth: 220 }}>{c.title}</td>
+                <td className="muted" style={{ fontSize: 13 }}>{c.language || '—'}</td>
+                <td style={{ textAlign: 'right' }}>{num(c.learners)}</td>
+                <td style={{ textAlign: 'right' }}>{num(c.shares)}</td>
+                <td style={{ textAlign: 'right' }}>{num(c.likes)}</td>
+                <td className="muted" style={{ fontSize: 13 }}>{c.lastUpdated || '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      </div>
+    </>
+  );
+}
+
 // ---------------- Go1 (native: lifetime totals + monthly snapshot) ----------------
 // Go1 never returns more than one month per request (no lifetime endpoint) — the
 // "Lifetime" scope here is built by scrapeGo1History.js scraping every month back
@@ -732,10 +895,12 @@ function Go1View({ rows, month, lifetime, isBookmarked, toggleBookmark }) {
   const [sort, setSort] = useState({ key: 'enrolments', dir: -1 });
   const [q, setQ] = useState('');
   const allRows = scope === 'lifetime' ? lifetime.courses : rows;
+  const f = useColumnFilter('go1');
   const activeRows = useMemo(() => {
     const s = q.trim().toLowerCase();
-    return s ? allRows.filter((c) => String(c.name || '').toLowerCase().includes(s)) : allRows;
-  }, [allRows, q]);
+    const bySearch = s ? allRows.filter((c) => String(c.name || '').toLowerCase().includes(s)) : allRows;
+    return applyFilter(bySearch, f.spec, f.fields);
+  }, [allRows, q, f.spec, f.fields]);
   const data = useMemo(() => [...activeRows].sort((a, b) => {
     if (STR_SORT_KEYS.has(sort.key)) return sort.dir * String(a[sort.key] || '').localeCompare(String(b[sort.key] || ''));
     return sort.dir * ((Number(a[sort.key]) || 0) - (Number(b[sort.key]) || 0));
@@ -782,8 +947,10 @@ function Go1View({ rows, month, lifetime, isBookmarked, toggleBookmark }) {
         <div className="table-header">
           <input className="table-search" placeholder="Search courses…" value={q}
             onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setQ(''); }} />
+          <FilterBuilder {...f} rows={allRows} />
           <span className="muted">{data.length === allRows.length ? `${allRows.length} courses` : `${data.length} of ${allRows.length}`}</span>
         </div>
+        <ActiveFilter f={f} shown={data.length} total={allRows.length} />
         <div className="table-scroll"><table>
         <thead><tr><th className="no-sort"></th>{th('name', 'Course', 'left')}{th('enrolments', 'Enrolments')}{th('completions', 'Completions')}{th('totalMinutes', 'Total minutes')}{th('avgSessionMinutes', 'Avg session')}</tr></thead>
         <tbody>
@@ -804,9 +971,11 @@ function Go1View({ rows, month, lifetime, isBookmarked, toggleBookmark }) {
 }
 
 // ---------------- Watchlist (cross-platform bookmarked courses) ----------------
-function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, isBookmarked, toggleBookmark, onOpen }) {
+function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, linkedin, go1, platform, isBookmarked, toggleBookmark, onOpen }) {
   const byPlatform = useMemo(() => {
-    const g = { udemy: [], coursera: [], coursera_cin: [], futurelearn: [], go1: [] };
+    // linkedin was absent here, so a bookmarked LinkedIn course was dropped:
+    // the star saved server-side but the Watchlist never showed it.
+    const g = { udemy: [], coursera: [], coursera_cin: [], futurelearn: [], linkedin: [], go1: [] };
     bookmarks.forEach((b) => { if (g[b.platform]) g[b.platform].push(b); });
     return g;
   }, [bookmarks]);
@@ -815,8 +984,19 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
   const courseraRows = byPlatform.coursera.map((b) => coursera.find((c) => (c.slug || c.name) === b.courseKey)).filter(Boolean);
   const courseraCinRows = byPlatform.coursera_cin.map((b) => courseraCin.find((c) => (c.slug || c.name) === b.courseKey)).filter(Boolean);
   const futurelearnRows = byPlatform.futurelearn.map((b) => futurelearn.find((c) => c.slug === b.courseKey)).filter(Boolean);
+  const linkedinRows = byPlatform.linkedin.map((b) => (linkedin || []).find((c) => c.title === b.courseKey)).filter(Boolean);
   const go1Rows = byPlatform.go1.map((b) => go1.find((c) => c.name === b.courseKey)).filter(Boolean);
-  const total = udemyRows.length + courseraRows.length + courseraCinRows.length + futurelearnRows.length + go1Rows.length;
+
+  // The platform tabs are a global filter, so the Watchlist has to honour them.
+  // It used to render every platform's section whatever the tab said, which
+  // read as the tabs being broken.
+  const showAll = !platform || platform === 'all';
+  const show = (key) => showAll || platform === key;
+  const total = (show('udemy') ? udemyRows.length : 0) + (show('coursera') ? courseraRows.length : 0)
+    + (show('coursera_cin') ? courseraCinRows.length : 0) + (show('futurelearn') ? futurelearnRows.length : 0)
+    + (show('linkedin') ? linkedinRows.length : 0) + (show('go1') ? go1Rows.length : 0);
+  const TAB_LABEL = { udemy: 'Udemy', coursera: 'Coursera', coursera_cin: 'Coursera CIN',
+    futurelearn: 'FutureLearn', linkedin: 'LinkedIn', go1: 'Go1' };
 
   // Flatten every platform into one shape for CSV export. Fields a platform
   // doesn't report are left undefined so they export blank rather than 0.
@@ -864,7 +1044,7 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
     );
   }
 
-  const section = (label, rows, thead, renderRow) => rows.length > 0 && (
+  const section = (key, label, rows, thead, renderRow) => show(key) && rows.length > 0 && (
     <div className="table-card" style={{ marginBottom: 20 }}>
       <div className="table-header"><strong>{label}</strong><span className="muted">{rows.length} shown</span></div>
       <div className="table-scroll"><table>
@@ -876,9 +1056,15 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
 
   return (
     <>
-      <Header crumb="WATCHLIST" title="Watchlist" sub={`${total} bookmarked course${total === 1 ? '' : 's'} across all platforms`}
+      <Header crumb="WATCHLIST" title="Watchlist" sub={showAll ? `${total} bookmarked course${total === 1 ? '' : 's'} across all platforms` : `${total} bookmarked course${total === 1 ? '' : 's'} on ${TAB_LABEL[platform] || platform}`}
         actions={<button className="btn btn-secondary" disabled={!exportRows.length} onClick={() => exportWatchlistCsv(exportRows)}>⬇ Export CSV</button>} />
-      {section('Udemy', udemyRows,
+      {total === 0 && (
+        <div className="table-card"><div className="watchlist-empty">
+          ☆ Nothing bookmarked on {TAB_LABEL[platform] || platform}.<br />
+          Switch to <b>All Platforms</b> to see your other {bookmarks.length} bookmark{bookmarks.length === 1 ? '' : 's'}.
+        </div></div>
+      )}
+      {section('udemy', 'Udemy', udemyRows,
         <><th className="no-sort"></th><th style={{ textAlign: 'left' }}>Course</th><th>Rating</th><th>Enrolled</th><th>Reviews</th><th>Revenue</th></>,
         (c) => (
           <tr key={c.id} className="click" onClick={() => onOpen(c)}>
@@ -890,7 +1076,7 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
             <td style={{ textAlign: 'right' }}>{c.revenue != null ? usd(c.revenue) : '—'}</td>
           </tr>
         ))}
-      {section('Coursera', courseraRows,
+      {section('coursera', 'Coursera', courseraRows,
         <><th className="no-sort"></th><th style={{ textAlign: 'left' }}>Course</th><th style={{ textAlign: 'left' }}>Status</th><th>Rating</th><th>Enrollments</th><th>Revenue</th></>,
         (c, i) => {
           const key = c.slug || c.name;
@@ -905,7 +1091,7 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
             </tr>
           );
         })}
-      {section('Coursera CIN', courseraCinRows,
+      {section('coursera_cin', 'Coursera CIN', courseraCinRows,
         <><th className="no-sort"></th><th style={{ textAlign: 'left' }}>Course</th><th style={{ textAlign: 'left' }}>Status</th><th>Rating</th><th>Enrollments</th><th>Revenue</th></>,
         (c, i) => {
           const key = c.slug || c.name;
@@ -920,7 +1106,7 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
             </tr>
           );
         })}
-      {section('FutureLearn', futurelearnRows,
+      {section('futurelearn', 'FutureLearn', futurelearnRows,
         <><th className="no-sort"></th><th style={{ textAlign: 'left' }}>Course</th><th style={{ textAlign: 'left' }}>Status</th><th>Wishlist</th><th>Enrollment</th></>,
         (c) => (
           <tr key={c.slug}>
@@ -931,7 +1117,18 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, go1, 
             <td style={{ textAlign: 'right' }}>{c.enrollment != null ? num(c.enrollment) : '—'}</td>
           </tr>
         ))}
-      {section('Go1', go1Rows,
+      {section('linkedin', 'LinkedIn', linkedinRows,
+        <><th className="no-sort"></th><th style={{ textAlign: 'left' }}>Course</th><th>Learners</th><th>Shares</th><th>Likes</th></>,
+        (c) => (
+          <tr key={c.title}>
+            <td onClick={(e) => e.stopPropagation()}><BookmarkButton active={isBookmarked('linkedin', c.title)} onClick={() => toggleBookmark('linkedin', c.title, c.title)} /></td>
+            <td style={{ fontWeight: 500, minWidth: 220 }}>{c.title}</td>
+            <td style={{ textAlign: 'right' }}>{num(c.learners)}</td>
+            <td style={{ textAlign: 'right' }}>{num(c.shares)}</td>
+            <td style={{ textAlign: 'right' }}>{num(c.likes)}</td>
+          </tr>
+        ))}
+      {section('go1', 'Go1', go1Rows,
         <><th className="no-sort"></th><th style={{ textAlign: 'left' }}>Course</th><th>Enrolments</th><th>Completions</th><th>Total minutes</th></>,
         (c, i) => (
           <tr key={i}>
@@ -1178,16 +1375,32 @@ function Captions({ udemy, onRefresh }) {
 // ---------------- Coupons ----------------
 // discount_value is the coupon's resulting PRICE in dollars (not a percent) —
 // is_free is true exactly when that price is $0 (see couponCreate.js / scrapeCoupons.js).
+// max_uses null means UNLIMITED, not zero — Udemy leaves it null on coupons with
+// no redemption cap. Read as 0 it made every uncapped coupon look spent.
+const couponLeft = (r) => (r.max_uses == null ? null : Math.max(0, r.max_uses - (r.used || 0)));
+
 function Coupons({ udemy }) {
   const [q, setQ] = useState('');
+  const [show, setShow] = useState('all');
   const rows = useMemo(() => {
     const list = [];
     udemy.forEach((c) => (c.coupons || []).forEach((cp) => list.push({ ...cp, course: c.title, courseId: c.id, courseUrl: c.url })));
     return list;
   }, [udemy]);
+  // USED UP: every redemption taken while the dates still run. Udemy stops
+  // listing these as valid, so they used to vanish from this page along with
+  // any sign the course had a coupon at all. They are shown, never counted as
+  // active, and never given a link — shared, a used-up link means full price.
+  const usedUp = useMemo(() => {
+    const list = [];
+    udemy.forEach((c) => (c.coupons_used_up || []).forEach((cp) => list.push({ ...cp, course: c.title, courseId: c.id, courseUrl: c.url, usedUp: true })));
+    return list;
+  }, [udemy]);
+  const usedUpCourses = new Set(usedUp.map((r) => r.courseId)).size;
   const active = useMemo(() => rows.filter((r) => r.active), [rows]);
   const totalUsed = active.reduce((s, r) => s + (r.used || 0), 0);
-  const totalRemaining = active.reduce((s, r) => s + Math.max(0, (r.max_uses || 0) - (r.used || 0)), 0);
+  const totalRemaining = active.reduce((s, r) => s + (couponLeft(r) ?? 0), 0);
+  const unlimitedCount = active.filter((r) => couponLeft(r) == null).length;
   // Real quota from Udemy's /coupons-v2/meta/ (remaining_coupon_count, scraped
   // separately from the coupons themselves) — how many NEW coupons Udemy will
   // still let you create this month on each course. Not checked yet == null,
@@ -1208,8 +1421,9 @@ function Coupons({ udemy }) {
 
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
-    return s ? active.filter((r) => r.course.toLowerCase().includes(s) || (r.code || '').toLowerCase().includes(s)) : active;
-  }, [active, q]);
+    const base = show === 'live' ? active : show === 'used' ? usedUp : [...active, ...usedUp];
+    return s ? base.filter((r) => r.course.toLowerCase().includes(s) || (r.code || '').toLowerCase().includes(s)) : base;
+  }, [active, usedUp, q, show]);
   const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '—');
 
   const [qQuota, setQQuota] = useState('');
@@ -1225,7 +1439,8 @@ function Coupons({ udemy }) {
       <div className="kpi-grid">
         <Kpi icon="🎟️" bg="#eef2ff" fg="#4f46e5" label="Active Coupons" value={num(active.length)} trend={`across ${activeCourseCount} course${activeCourseCount === 1 ? '' : 's'}`} />
         <Kpi icon="👥" bg="#cce5ff" fg="#0066cc" label="Learners Used" value={num(totalUsed)} trend="redemptions so far" />
-        <Kpi icon="🎯" bg="#dcfce7" fg="#10b981" label="Enrollment Slots Left" value={num(totalRemaining)} trend="before active coupons cap out" />
+        <Kpi icon="🎯" bg="#dcfce7" fg="#10b981" label="Enrollment Slots Left" value={num(totalRemaining)} trend={`before capped coupons run out${unlimitedCount ? ` · +${unlimitedCount} with no cap` : ''}`} />
+        <Kpi icon="⛔" bg="#fee2e2" fg="#dc2626" label="Used Up" value={num(usedUp.length)} trend={usedUp.length ? `ran out before their end date · ${usedUpCourses} course${usedUpCourses === 1 ? '' : 's'}` : 'none ran out early'} />
         <Kpi icon="➕" bg="#fef3c7" fg="#f59e0b" label="Coupon Creation Headroom" value={num(headroom)} trend={`courses with quota left · ${num(totalCouponsLeft)} total slots${notChecked ? ` · ${notChecked} not checked yet` : ''}`} />
       </div>
       {stackedCourses.length > 0 && (
@@ -1241,28 +1456,38 @@ function Coupons({ udemy }) {
       <div className="table-card">
         <div className="table-header">
           <input className="table-search" placeholder="Search course or code…" value={q} onChange={(e) => setQ(e.target.value)} />
-          <span className="muted">{shown.length} active coupon{shown.length === 1 ? '' : 's'}</span>
+          <select value={show} onChange={(e) => setShow(e.target.value)} style={{ width: 'auto' }}>
+            <option value="all">Live + used up ({active.length + usedUp.length})</option>
+            <option value="live">Live only ({active.length})</option>
+            <option value="used">Used up only ({usedUp.length})</option>
+          </select>
+          <span className="muted">{shown.length} coupon{shown.length === 1 ? '' : 's'}</span>
         </div>
         <div className="table-scroll"><table>
-          <thead><tr><th className="no-sort">Course</th><th className="no-sort">Code</th><th className="no-sort">Type</th><th className="no-sort">Used / Max</th><th className="no-sort">Remaining</th><th className="no-sort">Expires</th><th className="no-sort">Link</th></tr></thead>
+          <thead><tr><th className="no-sort">Course</th><th className="no-sort">Code</th><th className="no-sort">Status</th><th className="no-sort">Type</th><th className="no-sort">Used / Max</th><th className="no-sort">Remaining</th><th className="no-sort">Expires</th><th className="no-sort">Link</th></tr></thead>
           <tbody>
-            {shown.length === 0 && <tr><td colSpan={7} className="muted" style={{ padding: 16 }}>No active coupons right now.</td></tr>}
+            {shown.length === 0 && <tr><td colSpan={8} className="muted" style={{ padding: 16 }}>No coupons to show.</td></tr>}
             {shown.map((r, i) => {
-              const remaining = Math.max(0, (r.max_uses || 0) - (r.used || 0));
+              const remaining = couponLeft(r);
               const pct = r.max_uses ? Math.round(((r.used || 0) / r.max_uses) * 100) : 0;
-              const stacked = (activeCountByCourse.get(r.courseId) || 0) > 1;
-              const link = r.courseUrl ? `https://www.udemy.com${r.courseUrl}?couponCode=${encodeURIComponent(r.code)}` : null;
+              const stacked = !r.usedUp && (activeCountByCourse.get(r.courseId) || 0) > 1;
+              const link = !r.usedUp && r.courseUrl ? `https://www.udemy.com${r.courseUrl}?couponCode=${encodeURIComponent(r.code)}` : null;
               return (
-                <tr key={i}>
+                <tr key={i} style={r.usedUp ? { opacity: 0.6 } : undefined}>
                   <td style={{ fontWeight: 500, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {r.course}{stacked && <span className="pill draft" style={{ marginLeft: 6, fontSize: 11 }}>×{activeCountByCourse.get(r.courseId)} active</span>}
                   </td>
                   <td className="mono">{r.code}</td>
+                  <td>{r.usedUp ? <span className="pill" style={{ background: '#fee2e2', color: '#dc2626' }}>Used up</span> : <span className="pill ok">Live</span>}</td>
                   <td><span className={'pill ' + (r.is_free ? 'ok' : 'draft')}>{r.is_free ? 'Free enrollment' : `$${r.discount_value} price`}</span></td>
-                  <td>{r.used || 0}/{r.max_uses || 0} <span className="cov-track" style={{ marginLeft: 6 }}><span className="cov-fill" style={{ width: pct + '%' }} /></span></td>
-                  <td>{remaining}</td>
+                  <td>{r.max_uses == null
+                    ? <>{r.used || 0} <span className="muted">· no cap</span></>
+                    : <>{r.used || 0}/{r.max_uses} <span className="cov-track" style={{ marginLeft: 6 }}><span className="cov-fill" style={{ width: pct + '%' }} /></span></>}</td>
+                  <td>{remaining == null ? <span className="muted">Unlimited</span> : remaining}</td>
                   <td className="muted">{fmtDate(r.end)}</td>
-                  <td>{link ? <a href={link} target="_blank" rel="noreferrer">Open ↗</a> : <span className="muted">—</span>}</td>
+                  <td>{link ? <a href={link} target="_blank" rel="noreferrer">Open ↗</a>
+                    : r.usedUp ? <span className="muted" title="Every redemption has been taken — this link would no longer apply the coupon">no longer applies</span>
+                    : <span className="muted">—</span>}</td>
                 </tr>
               );
             })}
@@ -1277,7 +1502,7 @@ function Coupons({ udemy }) {
           <span className="muted">{quotaRows.length} shown</span>
         </div>
         <div className="table-scroll"><table>
-          <thead><tr><th className="no-sort">Course</th><th className="no-sort">Active Coupons</th><th className="no-sort">Coupons Left This Month</th></tr></thead>
+          <thead><tr><th className="no-sort">Course</th><th className="no-sort">Active Coupons</th><th className="no-sort">Used Up</th><th className="no-sort">Coupons Left This Month</th></tr></thead>
           <tbody>
             {quotaRows.map((c) => {
               const activeCount = (c.coupons || []).filter((cp) => cp.active).length;
@@ -1286,6 +1511,9 @@ function Coupons({ udemy }) {
                 <tr key={c.id}>
                   <td style={{ fontWeight: 500, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title}</td>
                   <td>{activeCount || <span className="muted">0</span>}</td>
+                  <td>{(c.coupons_used_up || []).length
+                    ? <span className="pill" style={{ background: '#fee2e2', color: '#dc2626' }} title={(c.coupons_used_up || []).map((x) => x.code).join(', ')}>{(c.coupons_used_up || []).map((x) => x.code).join(', ')}</span>
+                    : <span className="muted">—</span>}</td>
                   <td>
                     {left == null ? <span className="muted" title="Quota not scraped yet for this course">not checked</span>
                       : left > 0 ? <span className="pill ok">{left} left</span>
@@ -1302,7 +1530,7 @@ function Coupons({ udemy }) {
 }
 
 // ---------------- Settings (connect flows + theme + refresh) ----------------
-function Settings({ conn, dark, setDark, lastUpdate, onRefresh }) {
+function Settings({ conn, dark, setDark, lastUpdate, lastRun, onRefresh }) {
   const connected = conn?.connected;
   return (
     <>
@@ -1326,6 +1554,10 @@ function Settings({ conn, dark, setDark, lastUpdate, onRefresh }) {
             <label>Go1 connection</label>
             <ConnectGo1 onConnected={onRefresh} />
           </div>
+          <div className="setting-row">
+            <label>LinkedIn Learning connection</label>
+            <ConnectLinkedIn onConnected={onRefresh} />
+          </div>
           <div className="setting">
             <label>Data feeds</label>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{['enrollment', 'revenue', 'captions'].map((k) => <span key={k} className={'pill ' + (conn?.data?.[k] ? 'ok' : 'draft')}>{k} {conn?.data?.[k] ? '✓' : '—'}</span>)}</div>
@@ -1338,6 +1570,37 @@ function Settings({ conn, dark, setDark, lastUpdate, onRefresh }) {
             </div>
           </div>
           <div className="setting"><label>Last data refresh</label><div className="muted">{relTime(lastUpdate)} — updates run daily</div></div>
+          <div className="setting">
+            {/* Per-step outcome of the last daily run. Previously only
+                last-update.json held this and nothing read it, so a run with
+                four failed steps was indistinguishable from a clean one. */}
+            <label>Last update run</label>
+            {!lastRun ? <div className="muted">No run recorded yet.</div> : (
+              <>
+                <div className="muted" style={{ marginBottom: 8 }}>
+                  Finished {relTime(lastRun.finishedAt)}
+                  {lastRun.results?.some((r) => r.ok === false)
+                    && <b style={{ color: '#dc2626' }}> — {lastRun.results.filter((r) => r.ok === false).length} step(s) failed</b>}
+                </div>
+                <div className="run-steps">
+                  {(lastRun.results || []).map((r) => (
+                    <div key={r.name} className={'run-step ' + (r.skipped ? 'skip' : r.ok ? 'ok' : 'bad')}>
+                      <span>{r.skipped ? '⏭' : r.ok ? '✓' : '✕'}</span>
+                      <span className="rs-name">{r.name}</span>
+                      <span className="muted">{r.skipped ? r.skipped : `${r.secs}s`}</span>
+                    </div>
+                  ))}
+                </div>
+                {lastRun.results?.some((r) => r.ok === false) && (
+                  <div className="muted" style={{ marginTop: 8, fontSize: 12.5 }}>
+                    A failed step means the write guard refused bad data, so the old figures are still
+                    in place — they are simply not current. The usual cause is an expired session:
+                    reconnect the platform above and re-run.
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
       </div>
     </>
@@ -1345,6 +1608,30 @@ function Settings({ conn, dark, setDark, lastUpdate, onRefresh }) {
 }
 
 // ---------------- shared ----------------
+// WHEN THE NUMBERS ON THIS PAGE ARE FROM. Shown only when they are older than
+// STALE_DAYS, and named by source, so "Revenue: 34 days" is on the page that
+// shows revenue rather than buried in Settings. On "All Platforms" it lists
+// every platform that is behind, since the overview mixes them all.
+const STALE_DAYS = 2;
+const PLATFORM_NAMES = { udemy: 'Udemy', coursera: 'Coursera', coursera_cin: 'Coursera CIN', futurelearn: 'FutureLearn', linkedin: 'LinkedIn', go1: 'Go1' };
+const fmtDay = (iso) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+function StaleBanner({ freshness, platform }) {
+  if (!freshness) return null;
+  const keys = platform === 'all' ? Object.keys(PLATFORM_NAMES) : [platform];
+  const stale = keys
+    .map((k) => [k, (freshness[k]?.sources || []).filter((x) => x.ageDays != null && x.ageDays > STALE_DAYS)])
+    .filter(([, list]) => list.length);
+  if (!stale.length) return null;
+  return (
+    <div className="banner warn" style={{ marginBottom: 16 }}>
+      ⏳ <b>Some figures here are not current.</b>{' '}
+      {stale.map(([k, list], i) => (
+        <span key={k}>{i > 0 ? ' · ' : ''}<b>{PLATFORM_NAMES[k]}</b> — {list.map((x) => `${x.label.toLowerCase()} as of ${fmtDay(x.updatedAt)} (${Math.round(x.ageDays)} days)`).join(', ')}</span>
+      ))}
+    </div>
+  );
+}
+
 function Header({ title, sub, actions, crumb }) {
   return (<div className="page-header"><div>{crumb && <div className="page-crumb">{crumb}</div>}<h1 className="page-title">{title}</h1><p className="page-subtitle">{sub}</p></div>{actions && <div className="header-actions">{actions}</div>}</div>);
 }

@@ -56,3 +56,41 @@ server/_tmp_*
 # backups. Course data, not code; this repo is public.
 server/.thumb-resized/
 server/udemy-thumbnail-backups.json
+server/coursera-bio-backups.json
+
+# local editor backups
+*.bak
+*.bak-*
+*.bak[0-9]
+server/linkedin-auth.json
+
+# raw authenticated page captures
+server/snapshots/
+
+# ── FINANCE / ROYALTY — belongs in the private royalty repo, never here ──────
+# This repo is PUBLIC. The royalty work (the master title map, the SharePoint
+# sync, the revenue importers and their pages) is commercial data and stays out
+# of it. None of it has ever been committed; these lines make sure a careless
+# "git add -A" cannot change that.
+server/titleMapOverrides.json
+server/graphClient.js
+server/syncMasterRevenue.js
+server/discoverRoyaltyFiles.mjs
+server/importMasterRevenue.js
+server/importSwoRoyalty.js
+server/importTitleMap.js
+server/buildCourseMap.js
+server/batchRevenue.js
+server/batchCoverage.js
+server/auditBatches.js
+server/reconcile.js
+server/revenue.html
+server/batches.html
+server/course-map.html
+server/_tmp_share.mjs
+# The coupon report joins every coupon to its parent course, batch and SME from
+# the royalty tool, so what it writes is commercial even if the code is not.
+server/couponReport.mjs
+server/couponWorkbook.py
+# One-off diagnostics written during investigations; never meant to be kept.
+server/_tmp_*.mjs

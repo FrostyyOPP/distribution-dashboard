@@ -39,10 +39,23 @@ await minimizeWindow(ctx, page); // keep the automation window out of the user's
 console.log('Opening the Coursera CIN partner console…');
 await page.goto('https://www.coursera.org/admin/coursera/home/courses', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
 
+// THE CONSOLE NAVIGATES ON ITS OWN AFTER LOAD. goto() resolves at
+// DOMContentLoaded, then the admin app redirects, and an evaluate() caught
+// mid-redirect throws "Execution context was destroyed". Uncaught, that killed
+// the whole step on three of five nights (2026-09-20 → 24). A navigation is not
+// a failure — it means "not ready yet", which is exactly what the polling loop
+// below already waits out. Any other error still throws.
+const navigated = (e) => /Execution context was destroyed|because of a navigation|navigat/i.test(String(e?.message || e));
+
 async function extractRows() {
-  return page.evaluate(() => Array.from(document.querySelectorAll('a[href^="/teach/"][href$="/course"]'))
-    .map((a) => ({ name: a.textContent.trim(), slug: a.getAttribute('href').split('/')[2] }))
-    .filter((r) => r.name && r.slug));
+  try {
+    return await page.evaluate(() => Array.from(document.querySelectorAll('a[href^="/teach/"][href$="/course"]'))
+      .map((a) => ({ name: a.textContent.trim(), slug: a.getAttribute('href').split('/')[2] }))
+      .filter((r) => r.name && r.slug));
+  } catch (e) {
+    if (navigated(e)) return [];
+    throw e;
+  }
 }
 
 // Poll until the table actually has rows (or a real timeout) instead of a
@@ -68,11 +81,14 @@ for (; pageNum <= maxPages; pageNum++) {
   prevFirstSlug = rows[0].slug;
   process.stdout.write(`\rPage ${pageNum} — ${seen.size} unique courses so far`.padEnd(50));
 
+  // If the click itself navigates, the evaluate dies AFTER the click landed —
+  // so a navigation here means it worked. Reading it as "no next page" would
+  // stop at a partial list, and one over half-size would pass the write guard.
   const nextClicked = await page.evaluate(() => {
     const btn = document.querySelector('button[aria-label="Go to next page"], a[aria-label="Go to next page"]');
     if (btn && !btn.disabled && btn.getAttribute('aria-disabled') !== 'true') { btn.click(); return true; }
     return false;
-  });
+  }).catch((e) => { if (navigated(e)) return true; throw e; });
   if (!nextClicked) break;
 }
 process.stdout.write('\n');

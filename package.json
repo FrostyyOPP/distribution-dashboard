@@ -1,5 +1,5 @@
 {
-  "name": "udemy-dashboard",
+  "name": "distribution-dashboard",
   "private": true,
   "version": "1.0.0",
   "description": "Udemy instructor dashboard — Express API + React (Vite) frontend",

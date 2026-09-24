@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { chromium } from 'playwright';
-import { minimizeWindow } from './browserWindow.js';
+import { parkWindow } from './browserWindow.js';
 import { writeCourseraCinOverview } from './db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -29,7 +29,7 @@ const ctx = await browser.newContext({ storageState: AUTH_FILE, userAgent: UA })
 await ctx.addInitScript(() => Object.defineProperty(navigator, 'webdriver', { get: () => undefined }));
 const page = await ctx.newPage();
 
-await minimizeWindow(ctx, page); // keep the automation window out of the user's way
+await parkWindow(ctx, page); // out of sight, but rendering — Looker skips tiles it thinks are hidden
 console.log('Opening the partner analytics (Looker) dashboard…');
 await page.goto('https://www.coursera.org/admin/coursera/analytics/monitor', { waitUntil: 'networkidle', timeout: 60000 }).catch(() => {});
 await sleep(14000); // Looker render
@@ -49,6 +49,13 @@ for (const f of page.frames()) {
 }
 await browser.close();
 
+// NOTHING PARSED IS A FAILURE, NOT A SUCCESS. The write guard only protects rows
+// that already exist, so into an empty table an empty result passed as "✅ {}"
+// — which is all the CIN overview ever produced, from July to September.
+if (!Object.keys(kpis || {}).length) {
+  console.error('❌ No KPIs found on the page. Nothing written.');
+  process.exit(1);
+}
 const result = writeCourseraCinOverview(kpis);
 if (result.guarded) {
   console.error('⚠️ Refused to write — KPIs parsed looks like a partial/failed run. Kept existing data. Re-run after reconnecting.');

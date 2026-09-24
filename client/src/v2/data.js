@@ -131,13 +131,29 @@ const FIELD_GETTERS = {
   title: (c) => c.title || '',
 };
 
-function evalCondition(course, { field, op, value }) {
-  const getter = FIELD_GETTERS[field];
+function evalCondition(course, { field, op, value }, getters = FIELD_GETTERS) {
+  const getter = getters[field];
   if (!getter) return true;
   const v = getter(course);
+  // BLANK IS A REAL ANSWER. "Revenue is blank" and "revenue = 0" are different
+  // questions — one is a course nobody has reported on, the other is a course
+  // that earned nothing — and a filter that conflated them would hide the first.
+  if (op === 'blank') return v == null || v === '' || (Array.isArray(v) && !v.length);
+  if (op === 'notblank') return !(v == null || v === '' || (Array.isArray(v) && !v.length));
+  if (op === 'true') return !!v;
+  if (op === 'false') return !v;
   if (op === 'contains') return String(v).toLowerCase().includes(String(value).toLowerCase());
+  if (op === '!contains') return !String(v).toLowerCase().includes(String(value).toLowerCase());
+  if (op === 'starts') return String(v).toLowerCase().startsWith(String(value).toLowerCase());
   if (v == null) return false; // unknown value never matches a numeric/boolean comparison
-  const nv = typeof value === 'boolean' ? value : (isNaN(Number(value)) ? value : Number(value));
+  const nv = typeof value === 'boolean' ? value : (isNaN(Number(value)) || value === '' ? value : Number(value));
+  // Comparing a word to a word: do it as text, case-insensitively, or "Domain
+  // is finance" would miss "Finance".
+  if (typeof v === 'string' && typeof nv === 'string') {
+    const a = v.toLowerCase(), b = nv.toLowerCase();
+    if (op === '=') return a === b;
+    if (op === '!=') return a !== b;
+  }
   switch (op) {
     case '<': return v < nv;
     case '<=': return v <= nv;
@@ -149,11 +165,113 @@ function evalCondition(course, { field, op, value }) {
   }
 }
 
-export function applyFilter(rows, spec) {
+export function applyFilter(rows, spec, fields) {
   if (!spec || !Array.isArray(spec.conditions) || !spec.conditions.length) return rows;
   const combine = spec.combinator === 'OR' ? 'some' : 'every';
-  return rows.filter((c) => spec.conditions[combine]((cond) => evalCondition(c, cond)));
+  // A field registry may be supplied by the filter builder, which knows about
+  // every column on its table. Without one this falls back to the small set the
+  // typed smart-search understands, so that path behaves exactly as before.
+  const getters = fields
+    ? Object.fromEntries(fields.map((f) => [f.key, f.get]))
+    : FIELD_GETTERS;
+  return rows.filter((c) => spec.conditions[combine]((cond) => evalCondition(c, cond, getters)));
 }
+
+// ── the filter builder's view of a table ─────────────────────────────────
+//
+// One entry per column a person can filter on, with the accessor beside the
+// label. Keeping the getter here rather than in the component means the filter
+// reads a column the same way the table does — a filter that disagreed with the
+// cell next to it would be worse than no filter.
+//
+//   num   a quantity: >, >=, <, <=, =, is blank
+//   str   free text: contains, is, starts with
+//   enum  a short fixed list: offered as a dropdown of the values actually present
+//   bool  a tick or a cross
+const joined = (v) => (Array.isArray(v) ? v.join(', ') : (v || ''));
+const numOrNull = (v) => (v == null || v === '' ? null : Number(v));
+
+export const FILTER_FIELDS = {
+  udemy: [
+    { key: 'title', label: 'Course', type: 'str', get: (c) => c.title || '' },
+    { key: 'domain', label: 'Domain', type: 'enum', get: (c) => c.domain || '' },
+    { key: 'num_reviews', label: 'Total Ratings', type: 'num', get: (c) => Number(c.num_reviews) || 0 },
+    { key: 'num_subscribers', label: 'Enrollments', type: 'num', get: (c) => numOrNull(c.num_subscribers) },
+    // A RATING OF ZERO MEANS NOBODY HAS RATED IT, NOT THAT IT SCORED ZERO. All
+    // 11 courses stored as 0 have zero reviews, and the table already prints
+    // them as "—". Read literally, "rating below 4.5" would answer with eleven
+    // brand-new courses alongside the ones that genuinely under-perform, which
+    // is the opposite of what the question was asking. They are blank here, so
+    // "rating is blank" is how you go looking for them on purpose.
+    { key: 'rating', label: 'Avg Rating', type: 'num',
+      get: (c) => (Number(c.rating) === 0 && !Number(c.num_reviews) ? null : numOrNull(c.rating)) },
+    { key: 'revenue', label: 'Revenue', type: 'num', get: (c) => numOrNull(c.revenue) },
+    { key: 'minutes_taught', label: 'Minutes Watched', type: 'num', get: (c) => numOrNull(c.minutes_taught) },
+    { key: 'captions_count', label: 'Caption languages', type: 'num', get: (c) => capNames(c.caption_locales).length },
+    { key: 'coupons_count', label: 'Coupons active', type: 'num', get: (c) => (Array.isArray(c.coupons) ? c.coupons.length : 0) },
+    { key: 'remaining_coupon_count', label: 'Coupons left to create', type: 'num', get: (c) => numOrNull(c.remaining_coupon_count) },
+    { key: 'above2k', label: 'Enroll > 2k', type: 'enum', get: (c) => c.above2k || 'N/A' },
+    { key: 'is_udemy_business', label: 'Udemy Business', type: 'bool', get: (c) => !!c.is_udemy_business },
+    { key: 'is_published', label: 'Published', type: 'bool', get: (c) => !!c.is_published },
+    { key: 'hasPaul', label: 'Paul on the course', type: 'bool', get: (c) => !!c.hasPaul },
+    { key: 'hasGlobecon', label: 'Globecon', type: 'bool', get: (c) => !!c.hasGlobecon },
+    { key: 'sme', label: 'SME', type: 'str', get: (c) => joined(c.sme) },
+  ],
+  coursera: [
+    { key: 'name', label: 'Course', type: 'str', get: (c) => c.name || '' },
+    { key: 'domain', label: 'Domain', type: 'enum', get: (c) => c.domain || '' },
+    { key: 'status', label: 'Status', type: 'enum', get: (c) => c.status || '' },
+    { key: 'enrollments', label: 'Enrollments', type: 'num', get: (c) => numOrNull(c.enrollments) },
+    { key: 'completions', label: 'Completions', type: 'num', get: (c) => numOrNull(c.completions) },
+    // Stored as a fraction on some rows and a percentage on others; normalised
+    // here so "completion rate above 20" means the same thing on every row.
+    { key: 'completionRate', label: 'Completion rate (%)', type: 'num',
+      get: (c) => (c.completionRate == null ? null : (c.completionRate <= 1 ? c.completionRate * 100 : c.completionRate)) },
+    // Same as Udemy: unrated is blank, not zero.
+    { key: 'rating', label: 'Rating', type: 'num', get: (c) => (Number(c.rating) === 0 ? null : numOrNull(c.rating)) },
+    { key: 'revenue', label: 'Revenue', type: 'num', get: (c) => numOrNull(c.revenue) },
+    { key: 'hasStarweaverInstructor', label: 'Starweaver instructor', type: 'bool', get: (c) => !!c.hasStarweaverInstructor },
+    { key: 'instructorNames', label: 'Instructor names', type: 'str', get: (c) => joined(c.instructorNames) },
+  ],
+  futurelearn: [
+    { key: 'title', label: 'Course', type: 'str', get: (c) => c.title || '' },
+    { key: 'code', label: 'Code', type: 'str', get: (c) => c.code || '' },
+    { key: 'category', label: 'Category', type: 'enum', get: (c) => c.category || '' },
+    { key: 'status', label: 'Status', type: 'enum', get: (c) => c.status || '' },
+    { key: 'wishlistCount', label: 'Wishlist', type: 'num', get: (c) => numOrNull(c.wishlistCount) },
+    { key: 'enrollment', label: 'Enrollment', type: 'num', get: (c) => numOrNull(c.enrollment) },
+  ],
+  linkedin: [
+    { key: 'title', label: 'Course', type: 'str', get: (c) => c.title || '' },
+    { key: 'language', label: 'Language', type: 'enum', get: (c) => c.language || '' },
+    { key: 'learners', label: 'Learners', type: 'num', get: (c) => numOrNull(c.learners) },
+    { key: 'shares', label: 'Shares', type: 'num', get: (c) => numOrNull(c.shares) },
+    { key: 'likes', label: 'Likes', type: 'num', get: (c) => numOrNull(c.likes) },
+  ],
+  go1: [
+    { key: 'name', label: 'Course', type: 'str', get: (c) => c.name || c.title || '' },
+    { key: 'enrolments', label: 'Enrolments', type: 'num', get: (c) => numOrNull(c.enrolments) },
+    { key: 'completions', label: 'Completions', type: 'num', get: (c) => numOrNull(c.completions) },
+    { key: 'totalMinutes', label: 'Total minutes', type: 'num', get: (c) => numOrNull(c.totalMinutes) },
+    { key: 'avgSessionMinutes', label: 'Avg session (min)', type: 'num', get: (c) => numOrNull(c.avgSessionMinutes) },
+  ],
+};
+
+export const OPS_FOR = {
+  num: [['>', 'more than'], ['>=', 'at least'], ['<', 'less than'], ['<=', 'at most'],
+        ['=', 'is'], ['!=', 'is not'], ['blank', 'is blank'], ['notblank', 'is not blank']],
+  str: [['contains', 'contains'], ['!contains', 'does not contain'], ['=', 'is'], ['!=', 'is not'],
+        ['starts', 'starts with'], ['blank', 'is blank'], ['notblank', 'is not blank']],
+  enum: [['=', 'is'], ['!=', 'is not'], ['contains', 'contains'], ['blank', 'is blank'], ['notblank', 'is not blank']],
+  bool: [['true', 'is yes'], ['false', 'is no']],
+};
+
+// Every value a column actually holds, for the enum dropdowns. Taken from the
+// rows on screen rather than a hardcoded list, so a new domain appears on its
+// own instead of being silently unfilterable.
+export const valuesFor = (rows, field) =>
+  [...new Set(rows.map((r) => field.get(r)).filter((v) => v !== '' && v != null))]
+    .sort((a, b) => String(a).localeCompare(String(b)));
 
 // Parses a typed phrase like "rating below 4.3" or "no coupons" into the same
 // {conditions, combinator} shape applyFilter() expects — no network call, so
@@ -286,6 +404,14 @@ export function exportFutureLearnCsv(rows) {
     c.wishlistCount ?? '', c.enrollment ?? '',
   ]);
   downloadCsv(`futurelearn-courses-${new Date().toISOString().slice(0, 10)}.csv`, headers, data);
+}
+
+export function exportLinkedInCsv(rows) {
+  const headers = ['Course', 'Language', 'Learners', 'Shares', 'Likes', 'Last Updated'];
+  const data = rows.map((c) => [
+    c.title, c.language || '', c.learners ?? '', c.shares ?? '', c.likes ?? '', c.lastUpdated || '',
+  ]);
+  downloadCsv(`linkedin-learning-courses-${new Date().toISOString().slice(0, 10)}.csv`, headers, data);
 }
 
 export function exportGo1Csv(rows) {

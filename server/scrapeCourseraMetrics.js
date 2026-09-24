@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { chromium } from 'playwright';
-import { minimizeWindow } from './browserWindow.js';
+import { parkWindow } from './browserWindow.js';
 import { writeCourseraMetrics } from './db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -37,7 +37,7 @@ const ctx = await browser.newContext({ storageState: AUTH_FILE, userAgent: UA })
 await ctx.addInitScript(() => Object.defineProperty(navigator, 'webdriver', { get: () => undefined }));
 const page = await ctx.newPage();
 
-await minimizeWindow(ctx, page); // keep the automation window out of the user's way
+await parkWindow(ctx, page); // out of sight, but rendering — Looker skips tiles it thinks are hidden
 const bodies = [];
 page.on('response', async (res) => {
   if (!/querymanager\/queries/.test(res.url())) return;
@@ -92,7 +92,15 @@ while (Date.now() < deadline) {
 console.log(`(found after ${scrollRound} scroll round(s))`);
 await browser.close();
 
-if (!bodies.length) { console.error('❌ No dashboard data captured. Re-connect Coursera and retry.'); process.exit(1); }
+if (!bodies.length) {
+  // Do NOT jump to "reconnect". For thirteen nights this said so while the
+  // session was fine — the other Coursera steps, on the same session, all ran.
+  console.error('❌ No dashboard data captured.');
+  console.error('   If the other Coursera steps in this run succeeded, the session is fine and the page');
+  console.error('   did not render its tiles (a minimized window does this). Only if every Coursera step');
+  console.error('   failed is reconnecting likely to help.');
+  process.exit(1);
+}
 if (!best) {
   // Diagnostic: say WHAT was captured, so a schema change is distinguishable
   // from a page that never rendered the tile.

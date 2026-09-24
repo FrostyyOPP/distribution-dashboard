@@ -53,6 +53,19 @@ await ctx.addInitScript(() => Object.defineProperty(navigator, 'webdriver', { ge
 const page = await ctx.newPage();
 
 console.log('Opening the Go1 Content Studio Insights page…');
+// A DEAD SESSION LANDS ON THE LOGIN PAGE. Checked up front, because otherwise
+// every retry below re-opens the login page and the run ends minutes later
+// blaming "session, or Go1 changed something" — it could say which at once.
+{
+  await page.goto(INSIGHTS_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  await sleep(4000);
+  if (/\/login\b/.test(page.url())) {
+    console.error('❌ Go1 session expired — the saved login lands on the Go1 sign-in page.');
+    console.error('   Reconnect Go1 from the dashboard (Settings → Connect Go1), then re-run. Nothing written.');
+    await browser.close();
+    process.exit(1);
+  }
+}
 let contentFrame = null;
 for (let attempt = 1; attempt <= 8 && !contentFrame; attempt++) {
   await page.goto(INSIGHTS_URL, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});

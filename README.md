@@ -1,11 +1,20 @@
-# Udemy Instructor Dashboard
+# Distribution Dashboard
 
-A self-hosted **MERN-style dashboard** for Udemy instructors: see all your
-courses, ratings, reviews, Q&A, enrollment, and (optionally) revenue in one
-place — with search, sort, and CSV export.
+A self-hosted dashboard for Starweaver's course distribution across **Udemy,
+Coursera (Starweaver and CIN partner sides), FutureLearn, LinkedIn Learning and
+Go1** — courses, enrollment, revenue, minutes, captions and coupons in one
+place, with search, sort and CSV export.
 
-Built around what the Udemy Instructor API actually exposes (which is less than
-you'd expect), with documented workarounds for the rest.
+Almost none of this is available through an API. It is built around what each
+platform actually exposes, with documented workarounds for the rest.
+
+### Start here
+
+| Document | |
+|---|---|
+| **[SETUP.md](SETUP.md)** | installing and running this on a new machine — macOS or Windows |
+| [server/SCRAPING.md](server/SCRAPING.md) | how the scrapers work, and the traps that have bitten us |
+| [UI_UX.md](UI_UX.md) | what the interface contains, for anyone redesigning it |
 
 - **Express** backend that proxies the Udemy Instructor API (your key stays server-side)
 - **React + Vite** frontend: searchable/sortable table, per-course detail drawer, CSV export

@@ -1,22 +1,29 @@
 import 'dotenv/config';
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { request as httpRequest } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
+import XLSX from 'xlsx';
 import { udemyGet } from './udemyClient.js';
 import { SUPPORTED_LANGS, startJob as startCaptionJob, getJob as getCaptionJob } from './localizeCaptions.js';
 import {
   readEnrollment, readRevenue, readCaptions, readCoupons, readCouponQuota, readUdemyRealCourseIds, readTranscripts, setTranscript,
+  readBatchCoverage, readBatchCourseRevenue, readBatchDashboard, readCourseMapDashboard, readParentRevenueTree,
+  readFeedCatalog, readFeedRevenue,
   readCourseraCourses, readCourseraMetrics, readCourseraOverview, readCourseraCourseInstructors, latestUpdatedAt,
   readCourseraCourseStatus, readCourseraReviews, readCourseraCinReviews, readCourseraRevenueImport,
   readCourseraRevenueQuarterly, readCourseraQuarterTotals,
   readCourseraCourseItems, searchCourseraItems, readCourseraInstructorProfiles,
   readBookmarks, addBookmark, removeBookmark,
   readCourseraCinCourses, readCourseraCinMetrics, readCourseraCinOverview,
-  readFutureLearnCourses, readGo1Courses, readGo1Lifetime, readEngagement,
+  readFutureLearnCourses, readLinkedInCourses, readGo1Courses, readGo1Lifetime, readEngagement,
+  readRevenueDashboard, readCourseRevenueAcrossPlatforms,
+  readFreshness, readPlatformFreshness, rawQuery,
 } from './db.js';
 
 const app = express();
@@ -25,6 +32,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const AUTH_FILE = join(__dirname, 'udemy-auth.json');
 const COURSERA_AUTH_FILE = join(__dirname, 'coursera-auth.json');
 const FUTURELEARN_AUTH_FILE = join(__dirname, 'futurelearn-auth.json');
+const LINKEDIN_AUTH_FILE = join(__dirname, 'linkedin-auth.json');
 const GO1_AUTH_FILE = join(__dirname, 'go1-auth.json');
 
 // Convert a Cookie-Editor JSON export into a Playwright session (storageState).
@@ -47,6 +55,64 @@ function cookiesToState(list) {
 
 app.use(compression());
 app.use(cors());
+
+// --- The royalty tool, tunnelled ----------------------------------------
+// ~/course-map binds 127.0.0.1 only and has no auth of its own, so this proxy
+// is the single public door to it and the lock has to be here.
+//
+// ITS OWN CREDENTIAL, NOT THE DASHBOARD'S. This serves what every SME is owed,
+// the advances against it and the contract terms — the most sensitive data on
+// this machine — so it gets a lock of its own, shared with nobody else.
+//
+// MOUNTED ABOVE express.json() DELIBERATELY. Below it the body would already be
+// buffered and parsed here, and piping the request onward would hang; the
+// upload tab posts files of up to 120 MB through this route.
+const ROYALTY_TARGET = process.env.ROYALTY_TARGET || 'http://127.0.0.1:5059';
+const ROYALTY_USER = process.env.ROYALTY_USER || 'finance';
+const ROYALTY_PASS = process.env.ROYALTY_PASSWORD;
+
+// The page resolves its API calls from its own URL, so it must be reached with
+// the trailing slash or every fetch would climb to the dashboard's root.
+// Express matches "/royalty/" on this route too, so the bare path has to be
+// tested explicitly — redirecting on both is an infinite loop.
+app.get('/royalty', (req, res, next) => (
+  /^\/royalty(\?|$)/.test(req.originalUrl) ? res.redirect(301, '/royalty/') : next()
+));
+
+app.use('/royalty', (req, res, next) => {
+  // No password configured means not exposed. Failing closed matters more here
+  // than anywhere else in this file: the alternative is publishing it.
+  if (!ROYALTY_PASS) {
+    return res.status(503).type('text/plain').send(
+      'The royalty tool is not exposed. Set ROYALTY_PASSWORD in server/.env to turn it on.\n');
+  }
+  const [scheme, encoded] = (req.headers.authorization || '').split(' ');
+  if (scheme === 'Basic' && encoded) {
+    const [u, p] = Buffer.from(encoded, 'base64').toString().split(':');
+    // Compared at constant time so the password cannot be recovered a character
+    // at a time by watching how long the answer takes.
+    const ok = (a, b) => {
+      const A = Buffer.from(String(a)), B = Buffer.from(String(b));
+      return A.length === B.length && timingSafeEqual(A, B);
+    };
+    if (ok(u, ROYALTY_USER) && ok(p, ROYALTY_PASS)) return next();
+  }
+  res.set('WWW-Authenticate', 'Basic realm="Starweaver Royalty"');
+  return res.status(401).type('text/plain').send('Authentication required');
+}, (req, res) => {
+  const target = new URL(req.originalUrl.replace(/^\/royalty/, '') || '/', ROYALTY_TARGET);
+  const headers = { ...req.headers, host: target.host };
+  delete headers.authorization;          // ours, not course-map's business
+  const up = httpRequest({
+    hostname: target.hostname, port: target.port, path: target.pathname + target.search,
+    method: req.method, headers,
+  }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
+  up.on('error', (e) => res.status(502).type('text/plain').send(
+    `The royalty tool is not answering at ${ROYALTY_TARGET} (${e.message}).\n` +
+    'On this machine it is the com.starweaver.course-map launchd agent.\n'));
+  req.pipe(up);
+});
+
 app.use(express.json());
 
 // --- Public: the Distribution Catalog for Marketing Team -----------------
@@ -60,6 +126,11 @@ app.use(express.json());
 // touch this dashboard's revenue or enrollment data.
 const CATALOG_FILE =
   process.env.CATALOG_FILE || join(__dirname, '..', '..', 'marketing-tool', 'dist', 'catalog.html');
+
+// The catalog lived at /catalog until 2026-09 and that link is already in
+// people's hands (and in the marketing-tool README), so the old path keeps
+// working — a permanent redirect to the new name, above the auth gate too.
+app.get('/catalog', (req, res) => res.redirect(301, '/distribution-catalog'));
 
 app.get('/distribution-catalog', (req, res) => {
   if (!existsSync(CATALOG_FILE)) {
@@ -85,7 +156,7 @@ app.use((req, res, next) => {
     const [u, p] = Buffer.from(encoded, 'base64').toString().split(':');
     if (u === AUTH_USER && p === AUTH_PASS) return next();
   }
-  res.set('WWW-Authenticate', 'Basic realm="Udemy Dashboard"');
+  res.set('WWW-Authenticate', 'Basic realm="Distribution Dashboard"');
   return res.status(401).send('Authentication required');
 });
 
@@ -99,6 +170,9 @@ app.get('/api/health', (req, res) => {
 
 // When was the data last refreshed? Newest timestamp across all caches + the
 // last scheduled `npm run update` run.
+// How old each platform's data is, platform by platform — see db.js.
+app.get('/api/freshness', (req, res) => res.json(readPlatformFreshness()));
+
 app.get('/api/last-update', (req, res) => {
   let run = null;
   const lu = join(__dirname, 'last-update.json');
@@ -200,6 +274,31 @@ app.post('/api/futurelearn/connect', (req, res) => {
   res.json({ connected: true, cookieCount: state.cookies.length });
 });
 
+// --- LinkedIn Learning connection (session) -------------------------------
+app.get('/api/linkedin/connection', (req, res) => {
+  res.json({ connected: existsSync(LINKEDIN_AUTH_FILE) });
+});
+
+app.post('/api/linkedin/connect', (req, res) => {
+  const state = cookiesToState(req.body?.cookies ?? req.body);
+  const isLinkedIn = state.cookies.some((c) => /(^|\.)linkedin\.com$/.test(c.domain));
+  if (!state.cookies.length || !isLinkedIn) {
+    return res.status(400).json({
+      error: 'That does not look like a linkedin.com cookie export. Sign in at '
+        + 'linkedin.com/learning/instructor-portal/analytics and export the cookies from that tab.',
+      cookieCount: state.cookies.length,
+      domainsSeen: [...new Set(state.cookies.map((c) => c.domain))],
+    });
+  }
+  writeFileSync(LINKEDIN_AUTH_FILE, JSON.stringify(state, null, 2));
+  res.json({ connected: true, cookieCount: state.cookies.length });
+});
+
+app.post('/api/linkedin/disconnect', (req, res) => {
+  try { if (existsSync(LINKEDIN_AUTH_FILE)) unlinkSync(LINKEDIN_AUTH_FILE); } catch {}
+  res.json({ connected: false });
+});
+
 app.post('/api/futurelearn/disconnect', (req, res) => {
   try { if (existsSync(FUTURELEARN_AUTH_FILE)) unlinkSync(FUTURELEARN_AUTH_FILE); } catch {}
   res.json({ connected: false });
@@ -212,11 +311,19 @@ app.get('/api/go1/connection', (req, res) => {
 
 app.post('/api/go1/connect', (req, res) => {
   const state = cookiesToState(req.body?.cookies ?? req.body);
-  const isGo1 = state.cookies.some((c) => /go1\.com$/.test(c.domain));
-  if (!state.cookies.length || !isGo1) {
+  // The scrapers read starweaver.mygo1.com (Content Studio). Cookies for
+  // go1.com or learn.go1.com are a DIFFERENT session and will land on the
+  // login page — but they end in "go1.com" too, so a loose check accepted them
+  // and the connection silently looked fine while every scrape failed.
+  const domains = [...new Set(state.cookies.map((c) => c.domain))];
+  const hasStudio = state.cookies.some((c) => /(^|\.)mygo1\.com$/.test(c.domain));
+  if (!state.cookies.length || !hasStudio) {
     return res.status(400).json({
-      error: 'That does not look like a go1.com cookie export. Export from your mygo1.com dashboard while signed in.',
+      error: 'No mygo1.com cookies in that export. Sign in at starweaver.mygo1.com '
+        + '(Content Studio) and export the cookies from THAT tab — an export taken on '
+        + 'go1.com or learn.go1.com is a different session and cannot read Insights.',
       cookieCount: state.cookies.length,
+      domainsSeen: domains,
     });
   }
   writeFileSync(GO1_AUTH_FILE, JSON.stringify(state, null, 2));
@@ -353,6 +460,11 @@ app.get('/api/coursera-cin/reviews', (req, res) => {
 });
 
 // FutureLearn course list (title, code, category, status, run date, wishlist, enrollment).
+// LinkedIn Learning courses (from the DB).
+app.get('/api/linkedin/courses', (req, res) => {
+  res.json(readLinkedInCourses());
+});
+
 app.get('/api/futurelearn/courses', (req, res) => {
   res.json(readFutureLearnCourses());
 });
@@ -470,7 +582,7 @@ app.get('/api/courses', wrap(async (req, res) => {
   const { counts, scrapedAt } = readEnrollment();
   const { perCourse, total: totalRevenue, currency } = readRevenue();
   const { perCourse: captions } = readCaptions();
-  const { perCourse: coupons } = readCoupons();
+  const { perCourse: coupons, usedUpPerCourse: couponsUsedUp } = readCoupons();
   const { perCourse: couponQuota } = readCouponQuota();
   const { perCourse: engagement } = readEngagement();
   const { perCourse: realIds } = readUdemyRealCourseIds();
@@ -480,6 +592,8 @@ app.get('/api/courses', wrap(async (req, res) => {
     revenue: perCourse[c.id] ?? null,
     caption_locales: captions[c.id] ?? null,
     coupons: coupons[c.id] ?? null,
+    // Kept apart from `coupons`, which means LIVE everywhere it is counted.
+    coupons_used_up: couponsUsedUp[c.id] ?? [],
     remaining_coupon_count: couponQuota[c.id] ?? null,
     minutes_taught: engagement[c.id]?.minutesTaught ?? null,
     is_udemy_business: engagement[c.id]?.isUdemyBusiness ?? null,
@@ -607,6 +721,146 @@ app.get('/bookmarklet', (req, res) => {
   else res.status(404).send('bookmarklet.html not found');
 });
 
+// --- One-call export ------------------------------------------------------
+// Everything, as a single workbook or a single JSON, so another machine can
+// pull the whole dataset in one request instead of stitching a dozen endpoints
+// together. Reading is the only thing that travels: the scrapers need the
+// session files and a headed browser, so they stay on the machine that has them.
+//
+//   curl -u user:pass -O -J https://<host>/api/export.xlsx
+//   curl -u user:pass https://<host>/api/export.json
+const EXPORT_TABLES = [
+  ['Udemy courses', 'SELECT * FROM udemy_real_course_ids'],
+  ['Udemy revenue by course', 'SELECT * FROM revenue_course'],
+  ['Udemy revenue monthly', 'SELECT * FROM revenue_monthly'],
+  ['Udemy enrollment', 'SELECT * FROM enrollment'],
+  ['Udemy engagement', 'SELECT * FROM engagement_course'],
+  ['Udemy captions', 'SELECT * FROM captions'],
+  ['Udemy coupons', 'SELECT * FROM coupons'],
+  ['Coursera SW metrics', 'SELECT * FROM coursera_metrics'],
+  ['Coursera SW status', 'SELECT * FROM coursera_course_status'],
+  ['Coursera SW reviews', 'SELECT * FROM coursera_reviews'],
+  ['Coursera CIN metrics', 'SELECT * FROM coursera_cin_metrics'],
+  ['Coursera CIN reviews', 'SELECT * FROM coursera_cin_reviews'],
+  ['Coursera revenue quarterly', 'SELECT * FROM coursera_revenue_quarterly'],
+  ['Coursera instructors', 'SELECT * FROM coursera_instructor_profiles'],
+  ['Coursera rating history', 'SELECT * FROM coursera_rating_history'],
+  ['Coursera course items', 'SELECT * FROM coursera_course_items'],
+  ['FutureLearn courses', 'SELECT * FROM futurelearn_courses'],
+  ['LinkedIn courses', 'SELECT * FROM linkedin_courses'],
+  ['LinkedIn revenue', 'SELECT * FROM linkedin_revenue'],
+  ['Go1 courses', 'SELECT * FROM go1_courses'],
+  ['Go1 history', 'SELECT * FROM go1_course_history'],
+];
+
+function collectExport() {
+  const out = {};
+  for (const [name, sql] of EXPORT_TABLES) {
+    try { out[name] = rawQuery(sql); } catch (e) { out[name] = { error: String(e.message) }; }
+  }
+  return out;
+}
+
+app.get('/api/export.json', (req, res) => {
+  res.json({ generatedAt: new Date().toISOString(), freshness: readFreshness(), data: collectExport() });
+});
+
+app.get('/api/export.xlsx', (req, res) => {
+  const data = collectExport();
+  const wb = XLSX.utils.book_new();
+
+  // A README first, so whoever opens it knows how old each feed is rather than
+  // assuming every tab was refreshed today.
+  const fresh = readFreshness();
+  const readme = [
+    ['Starweaver — all platform data'],
+    ['Generated', new Date().toISOString()],
+    [],
+    ['Sheet', 'Rows'],
+    ...Object.entries(data).map(([k, v]) => [k, Array.isArray(v) ? v.length : 'error']),
+    [],
+    ['Last successful scrape per job'],
+    ['Job', 'Finished', 'Hours ago'],
+    ...fresh.map((f) => [f.job, f.lastOk, f.hoursAgo]),
+  ];
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(readme), 'README');
+
+  for (const [name, rows] of Object.entries(data)) {
+    if (!Array.isArray(rows) || !rows.length) continue;
+    // Excel caps sheet names at 31 characters.
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), name.slice(0, 31));
+  }
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition',
+    `attachment; filename="starweaver-all-platforms-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+  res.send(buf);
+});
+
+// --- Landing page + the two dashboards -----------------------------------
+// `/` is a small chooser; the Distribution Dashboard moves to a named path and
+// the Marketing Tool's generated catalog is served alongside it. These are
+// registered BEFORE the static/catch-all block below, which otherwise answers
+// every path with the React app.
+const MARKETING_DIST = process.env.MARKETING_DIST || join(__dirname, '..', '..', 'marketing-tool', 'dist');
+const MARKETING_HTML = join(MARKETING_DIST, 'catalog.html');
+
+app.get('/', (req, res) => res.sendFile(join(__dirname, 'home.html')));
+
+// Revenue view — separate from the main dashboard while the SharePoint royalty
+// work is still being shaped.
+app.get('/api/revenue/combined', (req, res) => res.json(readRevenueDashboard()));
+app.get('/api/revenue/by-course', (req, res) => res.json(readCourseRevenueAcrossPlatforms()));
+// Live courses per batch, per platform — counted from the live catalogues, not
+// from a status column in a spreadsheet.
+app.get('/api/batches', (req, res) => res.json(readBatchCoverage()));
+// Parent course -> its courses on each platform, with what each earned.
+app.get('/api/batch-revenue', (req, res) => res.json(readBatchCourseRevenue()));
+app.get('/api/batch-dashboard', (req, res) => res.json(readBatchDashboard()));
+// The resolved course map — live title -> Boostr -> parent -> revenue.
+app.get('/api/course-map', (req, res) => res.json(readCourseMapDashboard()));
+// Parent -> each platform's titles -> what each earned. The all-platforms view.
+app.get('/api/parent-tree', (req, res) => res.json(readParentRevenueTree()));
+
+// --- the feed other tools consume ----------------------------------------
+// Two stable shapes. Everything else here is shaped for this server's own
+// pages; these are an interface.
+app.get('/api/feed/catalog', (req, res) => res.json(readFeedCatalog(req.query.platform)));
+app.get('/api/feed/revenue', (req, res) => res.json(readFeedRevenue(req.query.platform)));
+// THE FINANCE PAGES LIVE IN THE PRIVATE ROYALTY REPO, beside this one, because
+// this repo is public and they are commercial data. They are still served from
+// here so the URLs keep working, but note they are only as private as this
+// server is: it is reachable over ngrok behind basic auth, so treat these three
+// as exposed and move them behind their own server if that stops being enough.
+const ROYALTY_PAGES = join(__dirname, '..', '..', 'starweaver-royalty', 'pages');
+const royaltyPage = (file) => (req, res) =>
+  res.sendFile(join(ROYALTY_PAGES, file), (err) => {
+    if (err) res.status(404).send(
+      `${file} lives in the private starweaver-royalty repo, which is expected at ` +
+      `~/starweaver-royalty alongside this one. It is not there.`);
+  });
+app.get(['/revenue', '/revenue-dashboard'], royaltyPage('revenue.html'));
+// The confirmed batches, on their own page — local only.
+app.get(['/batches', '/swo'], royaltyPage('batches.html'));
+app.get(['/course-map', '/map'], royaltyPage('course-map.html'));
+
+app.get(['/marketing-dashboard', '/marketing-dashboard/'], (req, res) => {
+  if (!existsSync(MARKETING_HTML)) {
+    return res.status(503).send(
+      '<p style="font:15px system-ui;padding:40px">The marketing catalog has not been built yet.<br>'
+      + 'Run <code>cd ~/marketing-tool &amp;&amp; npm run build:dashboard</code>, then reload.</p>');
+  }
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(MARKETING_HTML);
+});
+
+// the unmatched-courses workbook the marketing build also produces
+app.get('/marketing-dashboard/unmatched-courses.xlsx', (req, res) => {
+  const f = join(MARKETING_DIST, 'unmatched-courses.xlsx');
+  if (!existsSync(f)) return res.status(404).send('not built');
+  res.download(f);
+});
+
 // --- Serve the built frontend (production) -------------------------------
 // In prod the React build is served from the same origin, so the client's
 // relative /api calls work with no proxy.
@@ -633,5 +887,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Udemy dashboard API running on http://localhost:${PORT}`);
+  console.log(`Distribution Dashboard API running on http://localhost:${PORT}`);
 });
