@@ -22,7 +22,7 @@ console.log(`${courses.length} courses; ${alreadyHave} already have enrollment, 
 
 const browser = await chromium.launch({ headless: true });
 const perSlug = {};
-let found = 0;
+let found = 0, blocked = 0;
 
 for (let i = 0; i < todo.length; i++) {
   const c = todo[i];
@@ -30,9 +30,20 @@ for (let i = 0; i < todo.length; i++) {
   const page = await ctx.newPage();
   await minimizeWindow(ctx, page);
   try {
-    await page.goto(`https://www.futurelearn.com/courses/${c.slug}`, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-    const text = await page.evaluate(() => document.body.innerText).catch(() => '');
-    const m = text.match(/([\d,]+)\s+enrolled on this course/i);
+    const res = await page.goto(`https://www.futurelearn.com/courses/${c.slug}`, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
+    if (res && res.status() === 403) blocked++;
+    // READ THE NUMBER FROM THE PAGE'S OWN DATA, not its visible text. The page
+    // embeds `enrolmentCount` in the HTML it is served with, while "N enrolled
+    // on this course" is rendered later — read straight after load it was not
+    // there yet — and small courses never show that line at all. Reading the
+    // text found 3 of 174 on 2026-09-24; the data carries it for every course.
+    const html = await page.content().catch(() => '');
+    let m = html.match(/"enrolmentCount"\s*:\s*"?(\d[\d,]*)/);
+    if (!m) {
+      await sleep(2500);
+      const text = await page.evaluate(() => document.body.innerText).catch(() => '');
+      m = text.match(/([\d,]+)\s+enrolled on this course/i);
+    }
     if (m) { perSlug[c.slug] = Number(m[1].replace(/,/g, '')); found++; }
   } catch {}
   await ctx.close();
@@ -42,5 +53,16 @@ for (let i = 0; i < todo.length; i++) {
 process.stdout.write('\n');
 await browser.close();
 
+// A RUN THAT READS ALMOST NOTHING IS A FAILURE, and says so rather than ending
+// on a ✅ over "3/174". If most pages were refused outright (403), FutureLearn is
+// blocking the request — getting around that is deliberately not attempted.
 writeFutureLearnEnrollment(perSlug);
+if (todo.length && blocked >= todo.length * 0.5) {
+  console.error(`❌ FutureLearn refused ${blocked} of ${todo.length} public course pages (HTTP 403). Previous values kept.`);
+  process.exit(1);
+}
+if (todo.length >= 10 && found < todo.length * 0.5) {
+  console.error(`❌ Read enrollment for only ${found} of ${todo.length} courses — the page layout has probably changed. Previous values kept.`);
+  process.exit(1);
+}
 console.log(`✅ Got enrollment for ${found}/${todo.length} courses → dashboard.db`);

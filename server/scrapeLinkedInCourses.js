@@ -24,7 +24,7 @@ import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { chromium } from 'playwright';
-import { minimizeWindow } from './browserWindow.js';
+import { parkWindow } from './browserWindow.js';
 import { writeLinkedInCourses } from './db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -47,15 +47,26 @@ const browser = await chromium.launch({
 const ctx = await browser.newContext({ storageState: AUTH_FILE, userAgent: UA });
 await ctx.addInitScript(() => Object.defineProperty(navigator, 'webdriver', { get: () => undefined }));
 const page = await ctx.newPage();
-await minimizeWindow(ctx, page);
+// Parked, not minimized: in a minimized window LinkedIn's page never answers a
+// read at all — the sign-in check below hung for minutes instead of firing.
+await parkWindow(ctx, page);
 
 console.log('Opening the LinkedIn Learning instructor portal…');
 await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
-await sleep(6000);
 
-// Not-signed-in looks like a missing page, not a login redirect.
-const shell = await page.evaluate(() => document.body.innerText.slice(0, 400)).catch(() => '');
-if (/page doesn.?t exist|Page not found/i.test(shell) || /\/login|\/uas\/login|authwall/.test(page.url())) {
+// Not-signed-in looks like a missing page, not a login redirect. Read ONCE at
+// six seconds it could be judged before LinkedIn had rendered either answer,
+// and a dead session then ran on to write nothing. Wait for one of the two:
+// the analytics portal, or the logged-out shell.
+const signedOut = (text, url) => /page doesn.?t exist|Page not found|Join now\s+Sign in/i.test(text)
+  || /\/login|\/uas\/login|authwall/.test(url);
+let shell = '';
+for (let i = 0; i < 20; i++) {
+  await sleep(1500);
+  shell = await page.evaluate(() => document.body.innerText.slice(0, 1500)).catch(() => '');
+  if (signedOut(shell, page.url()) || /Active courses|Total shares/i.test(shell)) break;
+}
+if (signedOut(shell, page.url())) {
   console.error('❌ Not signed in. LinkedIn serves a "page doesn\'t exist" shell when the session is dead —');
   console.error('   it is not a broken URL. Reconnect LinkedIn from the dashboard and re-run.');
   await browser.close();
@@ -149,6 +160,13 @@ console.log('');
 await browser.close();
 
 const courses = [...seen.values()];
+// Nothing scraped is never a result to save. It means the portal never showed
+// its table — almost always a session that died between the check above and here.
+if (!courses.length) {
+  console.error('❌ No courses found on the portal. Nothing written — reconnect LinkedIn from the dashboard and re-run.');
+  await browser.close().catch(() => {});
+  process.exit(1);
+}
 const sum = (k) => courses.reduce((a, c) => a + (c[k] || 0), 0);
 console.log(`scraped ${courses.length} courses · learners ${sum('learners')} · shares ${sum('shares')} · likes ${sum('likes')}`);
 
@@ -176,4 +194,5 @@ if (mismatch) { console.error('❌ refusing to write a run that does not reconci
 
 const res = writeLinkedInCourses(courses);
 if (res && res.error) { console.error('❌', res.error); process.exit(1); }
+if (res && res.guarded) { console.error('❌ The write guard refused this run as too small against the existing table. Nothing written.'); process.exit(1); }
 console.log(`✅ ${courses.length} LinkedIn Learning courses → dashboard.db`);

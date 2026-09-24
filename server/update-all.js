@@ -26,6 +26,17 @@ const STEPS = [
   ['Coursera enrollment fix', 'fixCourseraEnrollment.js', 'coursera'],
   ['Coursera overview', 'scrapeCourseraOverview.js', 'coursera'],
   ['Coursera status + reviews', 'scrapeCourseraStatusReviews.js', 'coursera'],
+  // The other three platforms, each skipped on its own if its session is
+  // missing. Until 2026-09-24 none of them ran on a schedule at all: Go1 was 72
+  // days old, FutureLearn 10 and LinkedIn 9, with nothing on screen saying so.
+  // Placed before the CIN metrics step, which is slow and deliberately last.
+  ['FutureLearn courses', 'scrapeFutureLearnCourses.js', 'futurelearn'],
+  // --force: without it the scraper only visits courses that have no number
+  // yet, so a course's enrollment, once read, would never be refreshed.
+  ['FutureLearn enrollment', 'scrapeFutureLearnEnrollment.js', 'futurelearn', ['--force']],
+  ['LinkedIn courses', 'scrapeLinkedInCourses.js', 'linkedin'],
+  ['Go1 courses (latest month)', 'scrapeGo1Courses.js', 'go1'],
+  ['Go1 history (every month)', 'scrapeGo1History.js', 'go1'],
   ['Coursera CIN courses', 'scrapeCourseraCinCourses.js', 'coursera'],
   // Slowest step by far (~30-50 min: visits all ~467 CIN course pages
   // individually — this account has no org-wide analytics dashboard access,
@@ -44,13 +55,16 @@ const UDEMY_DISABLED = process.env.UDEMY_SCRAPING !== 'on';
 // Skip session-based steps if the session file is missing (avoids noisy failures).
 const needsUdemy = !UDEMY_DISABLED && existsSync(join(__dirname, 'udemy-auth.json'));
 const needsCoursera = existsSync(join(__dirname, 'coursera-auth.json'));
+// One saved session per platform; a platform without one is skipped, not failed.
+const SESSION = { futurelearn: 'futurelearn-auth.json', linkedin: 'linkedin-auth.json', go1: 'go1-auth.json' };
+const connected = (platform) => existsSync(join(__dirname, SESSION[platform]));
 if (UDEMY_DISABLED) console.log('⏸  Udemy scraping is disabled — skipping all Udemy steps.\n');
 
 // Spawn with the SAME node binary that's running us — works under launchd/cron
 // where npm/nvm aren't on PATH.
-function run(file) {
+function run(file, args = []) {
   return new Promise((resolve) => {
-    const p = spawn(process.execPath, [join(__dirname, file)], { cwd: __dirname, stdio: 'inherit' });
+    const p = spawn(process.execPath, [join(__dirname, file), ...args], { cwd: __dirname, stdio: 'inherit' });
     p.on('close', (code) => resolve(code));
     p.on('error', () => resolve(1));
   });
@@ -58,15 +72,16 @@ function run(file) {
 
 console.log(`\n=== Dashboard update · ${new Date().toISOString()} ===`);
 const results = [];
-for (const [name, file, platform] of STEPS) {
+for (const [name, file, platform, args] of STEPS) {
   if (platform === 'coursera' && !needsCoursera) { results.push({ name, skipped: 'not connected' }); continue; }
+  if (SESSION[platform] && !connected(platform)) { results.push({ name, skipped: 'not connected' }); continue; }
   if (platform === 'udemy' && !needsUdemy) {
     results.push({ name, skipped: UDEMY_DISABLED ? 'udemy scraping disabled' : 'not connected' });
     continue;
   }
   console.log(`\n▶ ${name}…`);
   const t = Date.now();
-  const code = await run(file);
+  const code = await run(file, args);
   results.push({ name, ok: code === 0, secs: Math.round((Date.now() - t) / 1000) });
 }
 
@@ -92,4 +107,11 @@ for (const r of results) {
   else console.log(`  ${r.ok ? '✅' : '❌'} ${r.name} (${r.secs}s)`);
 }
 const failed = results.filter((r) => r.ok === false);
-if (failed.length) console.log(`\n⚠️  ${failed.length} step(s) failed — your session may have expired; reconnect from the dashboard.`);
+if (failed.length) {
+  // Not "your session expired" by default: on 2026-09-24 neither failure was a
+  // session — one was a page that never rendered, the other a redirect race.
+  // If other steps on the same platform succeeded, the session is fine.
+  console.log(`\n⚠️  ${failed.length} step(s) failed. If other steps on the same platform ran, the session is fine and`);
+  console.log('   the page itself changed or failed to load — read that step\'s output above. If EVERY step on a');
+  console.log('   platform failed, its session has probably expired: reconnect it from the dashboard.');
+}

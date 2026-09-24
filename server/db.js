@@ -585,6 +585,10 @@ for (const [table, col, decl] of [
   // systems — and Udemy titles are deliberately rewritten per platform.
   ['udemy_real_course_ids', 'slug', 'TEXT'],
   ['udemy_real_course_ids', 'url', 'TEXT'],
+  // 'live' or 'used_up'. A used-up coupon is one Udemy has stopped listing as
+  // valid because every redemption was taken, while its dates still run. Kept,
+  // not dropped, so a course whose free coupon ran out still shows that it did.
+  ['coupons', 'status', "TEXT NOT NULL DEFAULT 'live'"],
 ]) {
   const has = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col);
   if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${decl}`);
@@ -821,8 +825,8 @@ export function readCaptions() {
 
 // --- Coupons (guarded snapshot, flattened) --------------------------------
 const insertCouponStmt = db.prepare(
-  `INSERT INTO coupons (course_id, code, is_free, discount_value, max_uses, used, start_time, end_time, active, updated_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  `INSERT INTO coupons (course_id, code, is_free, discount_value, max_uses, used, start_time, end_time, active, status, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 );
 export function writeCoupons(perCourse) {
   const ts = nowIso();
@@ -847,7 +851,8 @@ export function writeCoupons(perCourse) {
     for (const r of rows) {
       insertCouponStmt.run(
         r.course_id, r.code, r.is_free ? 1 : 0, r.discount_value ?? null, r.max_uses ?? null,
-        r.used ?? null, r.start ?? null, r.end ?? null, r.active ? 1 : 0, ts
+        r.used ?? null, r.start ?? null, r.end ?? null, r.active ? 1 : 0,
+        r.status === 'used_up' ? 'used_up' : 'live', ts
       );
     }
   });
@@ -855,17 +860,23 @@ export function writeCoupons(perCourse) {
   recordRun({ job: 'coupons', startedAt, ok: true, guarded: false, rowCount: rows.length });
   return { ok: true, guarded: false, written: rows.length };
 }
+// perCourse is LIVE coupons only — the meaning every caller already relies on
+// ("N active" is c.coupons.length in half a dozen places). Used-up coupons come
+// back separately, so they are visible without inflating any of those counts.
 export function readCoupons() {
   const rows = db.prepare('SELECT * FROM coupons').all();
   const scrapedAt = db.prepare('SELECT MAX(updated_at) AS t FROM coupons').get().t;
   const perCourse = {};
+  const usedUpPerCourse = {};
   for (const r of rows) {
-    (perCourse[r.course_id] ||= []).push({
+    const c = {
       code: r.code, is_free: !!r.is_free, discount_value: r.discount_value,
       max_uses: r.max_uses, used: r.used, start: r.start_time, end: r.end_time, active: !!r.active,
-    });
+      status: r.status || 'live',
+    };
+    ((r.status === 'used_up' ? usedUpPerCourse : perCourse)[r.course_id] ||= []).push(c);
   }
-  return { perCourse, scrapedAt };
+  return { perCourse, usedUpPerCourse, scrapedAt };
 }
 
 // --- Coupon quota (merge) --------------------------------------------------
@@ -1621,8 +1632,13 @@ const insertLinkedInCourseStmt = db.prepare(
 );
 export function writeLinkedInCourses(courses) {
   const ts = nowIso();
+  // Two blind find-and-replaces aimed at the ALL_TABLES list also caught this
+  // call, and stuffed two table names in front of `courses`. Every argument after
+  // the first then shifted: the options object received the course array, `job`
+  // became undefined, and the run log's NOT NULL job column crashed the write —
+  // so no LinkedIn scrape could save anything. One table, the rows, the writer.
   return guardedReplaceAll(
-    'linkedin_courses', 'linkedin_revenue', 'revenue_master', courses,
+    'linkedin_courses', courses,
     (c) => insertLinkedInCourseStmt.run(
       c.title, c.language ?? null, c.learners ?? null, c.shares ?? null,
       c.likes ?? null, c.lastUpdated ?? null, ts
@@ -1746,6 +1762,38 @@ export function readFreshness() {
     job: r.job, lastOk: r.lastOk, rows: r.rows,
     hoursAgo: r.lastOk ? Number(((Date.now() - Date.parse(r.lastOk)) / 36e5).toFixed(1)) : null,
   }));
+}
+
+// HOW OLD EACH PLATFORM'S DATA IS, as a reader would ask it. readFreshness()
+// above reports scrape JOBS from the run log; latestUpdatedAt() answers "when
+// did anything change", which is the wrong question for someone reading a page:
+// on 2026-09-24 it said "3h ago" because Coursera was fresh, while the Coursera
+// metrics had been stuck for 13 days until that morning and every Udemy figure
+// was 34 days old. This goes by the tables each page actually reads, and judges
+// a platform by its OLDEST one — one fresh table cannot vouch for a stale one.
+const PLATFORM_SOURCES = {
+  udemy: [['revenue_course', 'Revenue'], ['enrollment', 'Enrollments'], ['engagement_course', 'Minutes watched'],
+          ['captions', 'Captions'], ['coupons', 'Coupons']],
+  coursera: [['coursera_metrics', 'Enrollments & ratings'], ['coursera_course_status', 'Status & reviews']],
+  coursera_cin: [['coursera_cin_metrics', 'Enrollments & ratings'], ['coursera_cin_courses', 'Course list']],
+  futurelearn: [['futurelearn_courses', 'Courses & enrollment']],
+  linkedin: [['linkedin_courses', 'Learners, shares & likes']],
+  go1: [['go1_courses', 'Courses'], ['go1_course_history', 'Monthly history']],
+};
+export function readPlatformFreshness() {
+  const now = Date.now();
+  const out = {};
+  for (const [platform, sources] of Object.entries(PLATFORM_SOURCES)) {
+    const list = sources.map(([table, label]) => {
+      const col = TIMESTAMP_COLUMN_OVERRIDES[table] || 'updated_at';
+      let at = null;
+      try { at = db.prepare(`SELECT MAX(${col}) AS t FROM ${table}`).get().t; } catch { /* table absent */ }
+      return { table, label, updatedAt: at, ageDays: at ? +((now - Date.parse(at)) / 864e5).toFixed(1) : null };
+    });
+    const known = list.filter((x) => x.ageDays != null);
+    out[platform] = { sources: list, oldest: known.length ? known.reduce((a, b) => (b.ageDays > a.ageDays ? b : a)) : null };
+  }
+  return out;
 }
 
 export function readScrapeRuns(limit = 50) {

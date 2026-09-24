@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { request as httpRequest } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import express from 'express';
@@ -21,7 +23,7 @@ import {
   readCourseraCinCourses, readCourseraCinMetrics, readCourseraCinOverview,
   readFutureLearnCourses, readLinkedInCourses, readGo1Courses, readGo1Lifetime, readEngagement,
   readRevenueDashboard, readCourseRevenueAcrossPlatforms,
-  readFreshness, rawQuery,
+  readFreshness, readPlatformFreshness, rawQuery,
 } from './db.js';
 
 const app = express();
@@ -53,6 +55,64 @@ function cookiesToState(list) {
 
 app.use(compression());
 app.use(cors());
+
+// --- The royalty tool, tunnelled ----------------------------------------
+// ~/course-map binds 127.0.0.1 only and has no auth of its own, so this proxy
+// is the single public door to it and the lock has to be here.
+//
+// ITS OWN CREDENTIAL, NOT THE DASHBOARD'S. This serves what every SME is owed,
+// the advances against it and the contract terms — the most sensitive data on
+// this machine — so it gets a lock of its own, shared with nobody else.
+//
+// MOUNTED ABOVE express.json() DELIBERATELY. Below it the body would already be
+// buffered and parsed here, and piping the request onward would hang; the
+// upload tab posts files of up to 120 MB through this route.
+const ROYALTY_TARGET = process.env.ROYALTY_TARGET || 'http://127.0.0.1:5059';
+const ROYALTY_USER = process.env.ROYALTY_USER || 'finance';
+const ROYALTY_PASS = process.env.ROYALTY_PASSWORD;
+
+// The page resolves its API calls from its own URL, so it must be reached with
+// the trailing slash or every fetch would climb to the dashboard's root.
+// Express matches "/royalty/" on this route too, so the bare path has to be
+// tested explicitly — redirecting on both is an infinite loop.
+app.get('/royalty', (req, res, next) => (
+  /^\/royalty(\?|$)/.test(req.originalUrl) ? res.redirect(301, '/royalty/') : next()
+));
+
+app.use('/royalty', (req, res, next) => {
+  // No password configured means not exposed. Failing closed matters more here
+  // than anywhere else in this file: the alternative is publishing it.
+  if (!ROYALTY_PASS) {
+    return res.status(503).type('text/plain').send(
+      'The royalty tool is not exposed. Set ROYALTY_PASSWORD in server/.env to turn it on.\n');
+  }
+  const [scheme, encoded] = (req.headers.authorization || '').split(' ');
+  if (scheme === 'Basic' && encoded) {
+    const [u, p] = Buffer.from(encoded, 'base64').toString().split(':');
+    // Compared at constant time so the password cannot be recovered a character
+    // at a time by watching how long the answer takes.
+    const ok = (a, b) => {
+      const A = Buffer.from(String(a)), B = Buffer.from(String(b));
+      return A.length === B.length && timingSafeEqual(A, B);
+    };
+    if (ok(u, ROYALTY_USER) && ok(p, ROYALTY_PASS)) return next();
+  }
+  res.set('WWW-Authenticate', 'Basic realm="Starweaver Royalty"');
+  return res.status(401).type('text/plain').send('Authentication required');
+}, (req, res) => {
+  const target = new URL(req.originalUrl.replace(/^\/royalty/, '') || '/', ROYALTY_TARGET);
+  const headers = { ...req.headers, host: target.host };
+  delete headers.authorization;          // ours, not course-map's business
+  const up = httpRequest({
+    hostname: target.hostname, port: target.port, path: target.pathname + target.search,
+    method: req.method, headers,
+  }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
+  up.on('error', (e) => res.status(502).type('text/plain').send(
+    `The royalty tool is not answering at ${ROYALTY_TARGET} (${e.message}).\n` +
+    'On this machine it is the com.starweaver.course-map launchd agent.\n'));
+  req.pipe(up);
+});
+
 app.use(express.json());
 
 // --- Public: the marketing-tool course catalog ---------------------------
@@ -105,6 +165,9 @@ app.get('/api/health', (req, res) => {
 
 // When was the data last refreshed? Newest timestamp across all caches + the
 // last scheduled `npm run update` run.
+// How old each platform's data is, platform by platform — see db.js.
+app.get('/api/freshness', (req, res) => res.json(readPlatformFreshness()));
+
 app.get('/api/last-update', (req, res) => {
   let run = null;
   const lu = join(__dirname, 'last-update.json');
@@ -514,7 +577,7 @@ app.get('/api/courses', wrap(async (req, res) => {
   const { counts, scrapedAt } = readEnrollment();
   const { perCourse, total: totalRevenue, currency } = readRevenue();
   const { perCourse: captions } = readCaptions();
-  const { perCourse: coupons } = readCoupons();
+  const { perCourse: coupons, usedUpPerCourse: couponsUsedUp } = readCoupons();
   const { perCourse: couponQuota } = readCouponQuota();
   const { perCourse: engagement } = readEngagement();
   const { perCourse: realIds } = readUdemyRealCourseIds();
@@ -524,6 +587,8 @@ app.get('/api/courses', wrap(async (req, res) => {
     revenue: perCourse[c.id] ?? null,
     caption_locales: captions[c.id] ?? null,
     coupons: coupons[c.id] ?? null,
+    // Kept apart from `coupons`, which means LIVE everywhere it is counted.
+    coupons_used_up: couponsUsedUp[c.id] ?? [],
     remaining_coupon_count: couponQuota[c.id] ?? null,
     minutes_taught: engagement[c.id]?.minutesTaught ?? null,
     is_udemy_business: engagement[c.id]?.isUdemyBusiness ?? null,

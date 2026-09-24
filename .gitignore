@@ -88,3 +88,9 @@ server/revenue.html
 server/batches.html
 server/course-map.html
 server/_tmp_share.mjs
+# The coupon report joins every coupon to its parent course, batch and SME from
+# the royalty tool, so what it writes is commercial even if the code is not.
+server/couponReport.mjs
+server/couponWorkbook.py
+# One-off diagnostics written during investigations; never meant to be kept.
+server/_tmp_*.mjs

@@ -53,6 +53,7 @@ export default function AppV2() {
   const [conn, setConn] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
   const [lastRun, setLastRun] = useState(null);
+  const [freshness, setFreshness] = useState(null);
   const [view, setView] = useState('overview');
   const [platform, setPlatform] = useState('all');
   const [selected, setSelected] = useState(null);
@@ -75,6 +76,7 @@ export default function AppV2() {
     fetch('/api/courses').then((r) => r.json()).then(setRaw).catch(() => setRaw({ results: [] }));
     fetch('/api/connection').then((r) => r.json()).then(setConn).catch(() => {});
     fetch('/api/last-update').then((r) => r.json()).then((d) => { setLastUpdate(d.updatedAt); setLastRun(d.lastRun || null); }).catch(() => {});
+    fetch('/api/freshness').then((r) => r.json()).then(setFreshness).catch(() => {});
     loadBookmarks();
     fetch('/api/coursera/metrics').then((r) => r.json()).then((d) => {
       setCoursera(d.courses || d.results || []);
@@ -96,6 +98,8 @@ export default function AppV2() {
   const totalRevenue = raw?.total_revenue ?? null;
 
   const runFailures = ((lastRun && lastRun.results) || []).filter((r) => r.ok === false);
+  const staleList = Object.entries(freshness || {}).filter(([, v]) => v.oldest && v.oldest.ageDays > STALE_DAYS);
+  const staleCount = staleList.length;
   if (!raw) return <div className="dcx"><div className="center-note">Loading your dashboard…</div></div>;
   const go = (v) => { setView(v); setSideOpen(false); };
 
@@ -115,7 +119,15 @@ export default function AppV2() {
             <div className={'nav-item' + (view === 'settings' ? ' active' : '')} onClick={() => go('settings')}>{ICONS.settings}<span>Settings</span></div>
           </div>
           <div className="side-foot">
-            Last updated {relTime(lastUpdate)}
+            {/* "Last updated 3h ago" used to be the NEWEST table anywhere, which is
+                how every Udemy figure sat 34 days old under a sidebar calling the
+                data fresh. It now names what is fresh and counts what is not. */}
+            Last update run {relTime(lastRun?.finishedAt || lastUpdate)}
+            {staleCount > 0 && (
+              <div className="run-warn" onClick={() => go('settings')} title={staleList.map(([p, v]) => `${PLATFORM_NAMES[p]}: ${v.oldest.ageDays} days`).join('\n')}>
+                ⏳ {staleCount} platform{staleCount > 1 ? 's' : ''} with data over {STALE_DAYS} days old
+              </div>
+            )}
             {runFailures.length > 0 && (
               /* A run where most steps failed used to look identical to a clean
                  one: the guards refused the bad writes, the timestamps stayed
@@ -129,6 +141,7 @@ export default function AppV2() {
 
         <main className="main-content">
           <button className="btn btn-secondary menu-btn" style={{ marginBottom: 16 }} onClick={() => setSideOpen((o) => !o)}>☰ Menu</button>
+          {view !== 'settings' && <StaleBanner freshness={freshness} platform={platform} />}
           <div className="platform-tabs">
             {[['all', 'All Platforms'], ['udemy', 'Udemy'], ['coursera', 'Coursera'], ['coursera_cin', 'Coursera CIN'], ['futurelearn', 'FutureLearn'], ['linkedin', 'LinkedIn'], ['go1', 'Go1']].map(([k, l]) => (
               <button key={k} className={'ptab' + (platform === k ? ' active' : '') + (k === 'coursera' || k === 'coursera_cin' ? ' p-coursera' : '')} onClick={() => setPlatform(k)}>{l}</button>
@@ -565,10 +578,13 @@ function ColumnPicker({ visible, setVisible }) {
 // "N active · M left" — "left" is Udemy's rolling monthly creation allowance
 // (remaining_coupon_count: resets monthly, not a fixed lifetime cap).
 function couponFraction(c) {
-  if (!Array.isArray(c.coupons)) return <span className="muted">—</span>;
-  const active = c.coupons.length;
-  if (c.remaining_coupon_count == null) return active || '0';
-  return <span title="Left = more coupons Udemy will let you create this month on this course">{active} active · {c.remaining_coupon_count} left</span>;
+  const gone = (c.coupons_used_up || []).length;
+  if (!Array.isArray(c.coupons) && !gone) return <span className="muted">—</span>;
+  const active = (c.coupons || []).length;
+  // A course whose only coupon ran out used to read "—", as if it never had one.
+  const usedUp = gone ? <span style={{ color: '#dc2626' }} title={`Used up: ${c.coupons_used_up.map((x) => x.code).join(', ')}`}> · {gone} used up</span> : null;
+  if (c.remaining_coupon_count == null) return <>{active || '0'}{usedUp}</>;
+  return <span title="Left = more coupons Udemy will let you create this month on this course">{active} active · {c.remaining_coupon_count} left{usedUp}</span>;
 }
 function Courses({ udemy, totalRevenue, onOpen, onRefresh, isBookmarked, toggleBookmark }) {
   const [q, setQ] = useState('');
@@ -1359,16 +1375,32 @@ function Captions({ udemy, onRefresh }) {
 // ---------------- Coupons ----------------
 // discount_value is the coupon's resulting PRICE in dollars (not a percent) —
 // is_free is true exactly when that price is $0 (see couponCreate.js / scrapeCoupons.js).
+// max_uses null means UNLIMITED, not zero — Udemy leaves it null on coupons with
+// no redemption cap. Read as 0 it made every uncapped coupon look spent.
+const couponLeft = (r) => (r.max_uses == null ? null : Math.max(0, r.max_uses - (r.used || 0)));
+
 function Coupons({ udemy }) {
   const [q, setQ] = useState('');
+  const [show, setShow] = useState('all');
   const rows = useMemo(() => {
     const list = [];
     udemy.forEach((c) => (c.coupons || []).forEach((cp) => list.push({ ...cp, course: c.title, courseId: c.id, courseUrl: c.url })));
     return list;
   }, [udemy]);
+  // USED UP: every redemption taken while the dates still run. Udemy stops
+  // listing these as valid, so they used to vanish from this page along with
+  // any sign the course had a coupon at all. They are shown, never counted as
+  // active, and never given a link — shared, a used-up link means full price.
+  const usedUp = useMemo(() => {
+    const list = [];
+    udemy.forEach((c) => (c.coupons_used_up || []).forEach((cp) => list.push({ ...cp, course: c.title, courseId: c.id, courseUrl: c.url, usedUp: true })));
+    return list;
+  }, [udemy]);
+  const usedUpCourses = new Set(usedUp.map((r) => r.courseId)).size;
   const active = useMemo(() => rows.filter((r) => r.active), [rows]);
   const totalUsed = active.reduce((s, r) => s + (r.used || 0), 0);
-  const totalRemaining = active.reduce((s, r) => s + Math.max(0, (r.max_uses || 0) - (r.used || 0)), 0);
+  const totalRemaining = active.reduce((s, r) => s + (couponLeft(r) ?? 0), 0);
+  const unlimitedCount = active.filter((r) => couponLeft(r) == null).length;
   // Real quota from Udemy's /coupons-v2/meta/ (remaining_coupon_count, scraped
   // separately from the coupons themselves) — how many NEW coupons Udemy will
   // still let you create this month on each course. Not checked yet == null,
@@ -1389,8 +1421,9 @@ function Coupons({ udemy }) {
 
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
-    return s ? active.filter((r) => r.course.toLowerCase().includes(s) || (r.code || '').toLowerCase().includes(s)) : active;
-  }, [active, q]);
+    const base = show === 'live' ? active : show === 'used' ? usedUp : [...active, ...usedUp];
+    return s ? base.filter((r) => r.course.toLowerCase().includes(s) || (r.code || '').toLowerCase().includes(s)) : base;
+  }, [active, usedUp, q, show]);
   const fmtDate = (iso) => (iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '—');
 
   const [qQuota, setQQuota] = useState('');
@@ -1406,7 +1439,8 @@ function Coupons({ udemy }) {
       <div className="kpi-grid">
         <Kpi icon="🎟️" bg="#eef2ff" fg="#4f46e5" label="Active Coupons" value={num(active.length)} trend={`across ${activeCourseCount} course${activeCourseCount === 1 ? '' : 's'}`} />
         <Kpi icon="👥" bg="#cce5ff" fg="#0066cc" label="Learners Used" value={num(totalUsed)} trend="redemptions so far" />
-        <Kpi icon="🎯" bg="#dcfce7" fg="#10b981" label="Enrollment Slots Left" value={num(totalRemaining)} trend="before active coupons cap out" />
+        <Kpi icon="🎯" bg="#dcfce7" fg="#10b981" label="Enrollment Slots Left" value={num(totalRemaining)} trend={`before capped coupons run out${unlimitedCount ? ` · +${unlimitedCount} with no cap` : ''}`} />
+        <Kpi icon="⛔" bg="#fee2e2" fg="#dc2626" label="Used Up" value={num(usedUp.length)} trend={usedUp.length ? `ran out before their end date · ${usedUpCourses} course${usedUpCourses === 1 ? '' : 's'}` : 'none ran out early'} />
         <Kpi icon="➕" bg="#fef3c7" fg="#f59e0b" label="Coupon Creation Headroom" value={num(headroom)} trend={`courses with quota left · ${num(totalCouponsLeft)} total slots${notChecked ? ` · ${notChecked} not checked yet` : ''}`} />
       </div>
       {stackedCourses.length > 0 && (
@@ -1422,28 +1456,38 @@ function Coupons({ udemy }) {
       <div className="table-card">
         <div className="table-header">
           <input className="table-search" placeholder="Search course or code…" value={q} onChange={(e) => setQ(e.target.value)} />
-          <span className="muted">{shown.length} active coupon{shown.length === 1 ? '' : 's'}</span>
+          <select value={show} onChange={(e) => setShow(e.target.value)} style={{ width: 'auto' }}>
+            <option value="all">Live + used up ({active.length + usedUp.length})</option>
+            <option value="live">Live only ({active.length})</option>
+            <option value="used">Used up only ({usedUp.length})</option>
+          </select>
+          <span className="muted">{shown.length} coupon{shown.length === 1 ? '' : 's'}</span>
         </div>
         <div className="table-scroll"><table>
-          <thead><tr><th className="no-sort">Course</th><th className="no-sort">Code</th><th className="no-sort">Type</th><th className="no-sort">Used / Max</th><th className="no-sort">Remaining</th><th className="no-sort">Expires</th><th className="no-sort">Link</th></tr></thead>
+          <thead><tr><th className="no-sort">Course</th><th className="no-sort">Code</th><th className="no-sort">Status</th><th className="no-sort">Type</th><th className="no-sort">Used / Max</th><th className="no-sort">Remaining</th><th className="no-sort">Expires</th><th className="no-sort">Link</th></tr></thead>
           <tbody>
-            {shown.length === 0 && <tr><td colSpan={7} className="muted" style={{ padding: 16 }}>No active coupons right now.</td></tr>}
+            {shown.length === 0 && <tr><td colSpan={8} className="muted" style={{ padding: 16 }}>No coupons to show.</td></tr>}
             {shown.map((r, i) => {
-              const remaining = Math.max(0, (r.max_uses || 0) - (r.used || 0));
+              const remaining = couponLeft(r);
               const pct = r.max_uses ? Math.round(((r.used || 0) / r.max_uses) * 100) : 0;
-              const stacked = (activeCountByCourse.get(r.courseId) || 0) > 1;
-              const link = r.courseUrl ? `https://www.udemy.com${r.courseUrl}?couponCode=${encodeURIComponent(r.code)}` : null;
+              const stacked = !r.usedUp && (activeCountByCourse.get(r.courseId) || 0) > 1;
+              const link = !r.usedUp && r.courseUrl ? `https://www.udemy.com${r.courseUrl}?couponCode=${encodeURIComponent(r.code)}` : null;
               return (
-                <tr key={i}>
+                <tr key={i} style={r.usedUp ? { opacity: 0.6 } : undefined}>
                   <td style={{ fontWeight: 500, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {r.course}{stacked && <span className="pill draft" style={{ marginLeft: 6, fontSize: 11 }}>×{activeCountByCourse.get(r.courseId)} active</span>}
                   </td>
                   <td className="mono">{r.code}</td>
+                  <td>{r.usedUp ? <span className="pill" style={{ background: '#fee2e2', color: '#dc2626' }}>Used up</span> : <span className="pill ok">Live</span>}</td>
                   <td><span className={'pill ' + (r.is_free ? 'ok' : 'draft')}>{r.is_free ? 'Free enrollment' : `$${r.discount_value} price`}</span></td>
-                  <td>{r.used || 0}/{r.max_uses || 0} <span className="cov-track" style={{ marginLeft: 6 }}><span className="cov-fill" style={{ width: pct + '%' }} /></span></td>
-                  <td>{remaining}</td>
+                  <td>{r.max_uses == null
+                    ? <>{r.used || 0} <span className="muted">· no cap</span></>
+                    : <>{r.used || 0}/{r.max_uses} <span className="cov-track" style={{ marginLeft: 6 }}><span className="cov-fill" style={{ width: pct + '%' }} /></span></>}</td>
+                  <td>{remaining == null ? <span className="muted">Unlimited</span> : remaining}</td>
                   <td className="muted">{fmtDate(r.end)}</td>
-                  <td>{link ? <a href={link} target="_blank" rel="noreferrer">Open ↗</a> : <span className="muted">—</span>}</td>
+                  <td>{link ? <a href={link} target="_blank" rel="noreferrer">Open ↗</a>
+                    : r.usedUp ? <span className="muted" title="Every redemption has been taken — this link would no longer apply the coupon">no longer applies</span>
+                    : <span className="muted">—</span>}</td>
                 </tr>
               );
             })}
@@ -1458,7 +1502,7 @@ function Coupons({ udemy }) {
           <span className="muted">{quotaRows.length} shown</span>
         </div>
         <div className="table-scroll"><table>
-          <thead><tr><th className="no-sort">Course</th><th className="no-sort">Active Coupons</th><th className="no-sort">Coupons Left This Month</th></tr></thead>
+          <thead><tr><th className="no-sort">Course</th><th className="no-sort">Active Coupons</th><th className="no-sort">Used Up</th><th className="no-sort">Coupons Left This Month</th></tr></thead>
           <tbody>
             {quotaRows.map((c) => {
               const activeCount = (c.coupons || []).filter((cp) => cp.active).length;
@@ -1467,6 +1511,9 @@ function Coupons({ udemy }) {
                 <tr key={c.id}>
                   <td style={{ fontWeight: 500, maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.title}</td>
                   <td>{activeCount || <span className="muted">0</span>}</td>
+                  <td>{(c.coupons_used_up || []).length
+                    ? <span className="pill" style={{ background: '#fee2e2', color: '#dc2626' }} title={(c.coupons_used_up || []).map((x) => x.code).join(', ')}>{(c.coupons_used_up || []).map((x) => x.code).join(', ')}</span>
+                    : <span className="muted">—</span>}</td>
                   <td>
                     {left == null ? <span className="muted" title="Quota not scraped yet for this course">not checked</span>
                       : left > 0 ? <span className="pill ok">{left} left</span>
@@ -1561,6 +1608,30 @@ function Settings({ conn, dark, setDark, lastUpdate, lastRun, onRefresh }) {
 }
 
 // ---------------- shared ----------------
+// WHEN THE NUMBERS ON THIS PAGE ARE FROM. Shown only when they are older than
+// STALE_DAYS, and named by source, so "Revenue: 34 days" is on the page that
+// shows revenue rather than buried in Settings. On "All Platforms" it lists
+// every platform that is behind, since the overview mixes them all.
+const STALE_DAYS = 2;
+const PLATFORM_NAMES = { udemy: 'Udemy', coursera: 'Coursera', coursera_cin: 'Coursera CIN', futurelearn: 'FutureLearn', linkedin: 'LinkedIn', go1: 'Go1' };
+const fmtDay = (iso) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+function StaleBanner({ freshness, platform }) {
+  if (!freshness) return null;
+  const keys = platform === 'all' ? Object.keys(PLATFORM_NAMES) : [platform];
+  const stale = keys
+    .map((k) => [k, (freshness[k]?.sources || []).filter((x) => x.ageDays != null && x.ageDays > STALE_DAYS)])
+    .filter(([, list]) => list.length);
+  if (!stale.length) return null;
+  return (
+    <div className="banner warn" style={{ marginBottom: 16 }}>
+      ⏳ <b>Some figures here are not current.</b>{' '}
+      {stale.map(([k, list], i) => (
+        <span key={k}>{i > 0 ? ' · ' : ''}<b>{PLATFORM_NAMES[k]}</b> — {list.map((x) => `${x.label.toLowerCase()} as of ${fmtDay(x.updatedAt)} (${Math.round(x.ageDays)} days)`).join(', ')}</span>
+      ))}
+    </div>
+  );
+}
+
 function Header({ title, sub, actions, crumb }) {
   return (<div className="page-header"><div>{crumb && <div className="page-crumb">{crumb}</div>}<h1 className="page-title">{title}</h1><p className="page-subtitle">{sub}</p></div>{actions && <div className="header-actions">{actions}</div>}</div>);
 }
