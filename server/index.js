@@ -115,9 +115,9 @@ app.use('/royalty', (req, res, next) => {
 
 app.use(express.json());
 
-// --- Public: the marketing-tool course catalog ---------------------------
-// Mounted ABOVE the basic-auth gate on purpose, so /catalog is open to anyone
-// with the link (asked for 2026-09-11). Keep it above that gate - moving it
+// --- Public: the Distribution Catalog for Marketing Team -----------------
+// Mounted ABOVE the basic-auth gate on purpose, so /distribution-catalog is open
+// to anyone with the link (asked for 2026-09-11). Keep it above that gate - moving it
 // below puts the catalog behind the dashboard password.
 //
 // The file is a static build artifact from ~/marketing-tool, rebuilt daily at
@@ -127,7 +127,7 @@ app.use(express.json());
 const CATALOG_FILE =
   process.env.CATALOG_FILE || join(__dirname, '..', '..', 'marketing-tool', 'dist', 'catalog.html');
 
-app.get('/catalog', (req, res) => {
+app.get('/distribution-catalog', (req, res) => {
   if (!existsSync(CATALOG_FILE)) {
     return res
       .status(503)
