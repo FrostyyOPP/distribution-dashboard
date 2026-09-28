@@ -57,6 +57,9 @@ const STEPS = [
   ['Go1 catalogue', 'scrapeGo1Catalog.js', 'go1'],
   ['Go1 courses (latest month)', 'scrapeGo1Courses.js', 'go1'],
   ['Go1 history (every month)', 'scrapeGo1History.js', 'go1'],
+  // The third Coursera partner console (new 2026-09): course list and status
+  // from the console, completions and ratings from Looker once launched.
+  ['Coursera — Courses for Dummies', 'scrapeCourseraDummies.js', 'coursera'],
   ['Coursera CIN courses', 'scrapeCourseraCinCourses.js', 'coursera'],
   // Slowest step by far (~30-50 min: visits all ~467 CIN course pages
   // individually — this account has no org-wide analytics dashboard access,
