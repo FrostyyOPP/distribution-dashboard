@@ -6,6 +6,7 @@
 // this with a bare environment, and without it the switch could never be on.
 import 'dotenv/config';
 import { spawn } from 'node:child_process';
+import { lookup } from 'node:dns/promises';
 import { writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -90,6 +91,24 @@ function run(file, args = []) {
 }
 
 console.log(`\n=== Dashboard update · ${new Date().toISOString()} ===`);
+
+// WAIT FOR THE NETWORK FIRST. The job starts at 7am, often straight after the
+// Mac wakes, and on 2026-09-27 the network was not up: "getaddrinfo ENOTFOUND
+// www.udemy.com", and all fourteen network steps failed in a row. Up to fifteen
+// minutes for the platforms' names to resolve before anything is attempted.
+async function waitForNetwork(maxMinutes = 15) {
+  const hosts = ['www.udemy.com', 'www.coursera.org'];
+  const deadline = Date.now() + maxMinutes * 60000;
+  for (let n = 0; ; n++) {
+    try { await Promise.all(hosts.map((h) => lookup(h))); if (n) console.log(`🌐 network up after ${n} check(s)`); return true; }
+    catch (e) {
+      if (Date.now() > deadline) { console.log(`⚠️  network still down after ${maxMinutes} minutes (${e.code || e.message}) — running anyway`); return false; }
+      if (n === 0) console.log(`⏳ waiting for the network (${e.code || e.message})…`);
+      await new Promise((res) => setTimeout(res, 15000));
+    }
+  }
+}
+if (!PLAN) await waitForNetwork();
 const results = [];
 // A step marked { everyDays, table } runs only once that table is older than
 // everyDays. Read from the table itself, so a manual run resets the clock too.
@@ -119,8 +138,20 @@ for (const [name, file, platform, args, opts] of STEPS) {
   if (PLAN) { results.push({ name, plan: `would run ${file}${args?.length ? ' ' + args.join(' ') : ''}` }); continue; }
   console.log(`\n▶ ${name}…`);
   const t = Date.now();
-  const code = await run(file, args);
-  results.push({ name, ok: code === 0, secs: Math.round((Date.now() - t) / 1000) });
+  let code = await run(file, args);
+  // ONE RETRY, after a pause. What fails at 7am is mostly passing — a dropped
+  // connection, or Coursera's Looker dashboard not drawing its table in time —
+  // and the same step succeeds minutes later (both seen 2026-09-28). A step
+  // that fails twice is reported as failed, exactly as before.
+  let retried = false;
+  if (code !== 0) {
+    console.log(`\n↻ ${name} failed — retrying once in 90s…`);
+    await new Promise((res) => setTimeout(res, 90000));
+    await waitForNetwork(5);
+    code = await run(file, args);
+    retried = true;
+  }
+  results.push({ name, ok: code === 0, secs: Math.round((Date.now() - t) / 1000), ...(retried ? { retried: true } : {}) });
 }
 
 if (PLAN) {
@@ -148,7 +179,7 @@ writeFileSync(join(__dirname, 'last-update.json'), JSON.stringify({ finishedAt: 
 console.log('\n=== Summary ===');
 for (const r of results) {
   if (r.skipped) console.log(`  ⏭  ${r.name} — ${r.skipped}`);
-  else console.log(`  ${r.ok ? '✅' : '❌'} ${r.name} (${r.secs}s)`);
+  else console.log(`  ${r.ok ? '✅' : '❌'} ${r.name} (${r.secs}s)${r.retried ? (r.ok ? ' — passed on retry' : ' — failed twice') : ''}`);
 }
 const failed = results.filter((r) => r.ok === false);
 if (failed.length) {

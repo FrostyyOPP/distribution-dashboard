@@ -206,7 +206,10 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
   // Coursera CIN is a separate partner account under the same login — kept out
   // of "All Platforms" totals entirely (it isn't part of Starweaver's own
   // teaching portfolio), only shown when its own tab is selected.
-  const courCinStats = { count: courseraCin.length, enroll: courseraCin.reduce((s, c) => s + (c.enrollments || 0), 0) };
+  // LIVE CIN COURSES EXCLUDE DRAFTS — the test the catalogue feed already uses.
+  // Counting every row put 5 unlaunched drafts into the total (325 vs 320).
+  const cinLive = courseraCin.filter((c) => String(c.status || '').toLowerCase() !== 'draft');
+  const courCinStats = { count: cinLive.length, drafts: courseraCin.length - cinLive.length, enroll: cinLive.reduce((s, c) => s + (c.enrollments || 0), 0) };
   // LIVE means in progress AND public — the same test the catalogue feed uses.
   // futurelearn.length counted drafts, finished runs and private runs too (204
   // against 146 live on 2026-09-24).
@@ -249,9 +252,11 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
   const liTotals = (linkedin && linkedin.totals) || { learners: 0, shares: 0, likes: 0 };
   const liStats = { count: liRows.length, enroll: liTotals.learners || 0 };
   const courses = isUdemy ? udemy.length : isCoursera ? courStats.count : isCourseraCin ? courCinStats.count : isFutureLearn ? flStats.count : isLinkedIn ? liStats.count : isGo1 ? go1Stats.count
-    : udemy.length + courStats.count + flStats.count + go1Stats.count;
+    // Every platform. LinkedIn (added 2026-09-15) and Coursera CIN were never
+    // added to this sum, so "Total Courses" left out 375 of 1,026.
+    : udemy.length + courStats.count + courCinStats.count + flStats.count + liStats.count + go1Stats.count;
   const enroll = isUdemy ? uEnroll : isCoursera ? courStats.enroll : isCourseraCin ? courCinStats.enroll : isFutureLearn ? flStats.enroll : isLinkedIn ? liStats.enroll : isGo1 ? go1Stats.enroll
-    : uEnroll + courStats.enroll + flStats.enroll + go1Stats.enroll;
+    : uEnroll + courStats.enroll + courCinStats.enroll + flStats.enroll + liStats.enroll + go1Stats.enroll;
   const withPaul = udemy.filter((c) => c.hasPaul).length;
   const finGap = udemy.filter((c) => c.isFinance && !c.hasGlobecon).length;
   const ubCount = udemy.filter((c) => c.is_udemy_business).length;
@@ -268,14 +273,14 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
   const courseraRevenueTotal = coursera.reduce((s, c) => s + (c.revenue || 0), 0);
   const courseraRevenueCount = coursera.filter((c) => c.revenue != null).length;
   const courseraCinRevenueTotal = courseraCin.reduce((s, c) => s + (c.revenue || 0), 0);
-  const courseraCinRevenueCount = courseraCin.filter((c) => c.revenue != null).length;
+  const courseraCinRevenueCount = cinLive.filter((c) => c.revenue != null).length;
   const revenueValue = isCoursera ? (courseraRevenueCount ? usd(courseraRevenueTotal) : '—')
     : isCourseraCin ? (courseraCinRevenueCount ? usd(courseraCinRevenueTotal) : '—')
     : (isFutureLearn || isGo1 || isLinkedIn) ? '—'
     : isAll ? ((totalRevenue == null && !courseraRevenueCount) ? '—' : usd((totalRevenue || 0) + courseraRevenueTotal))
     : (totalRevenue == null ? '—' : usd(totalRevenue));
   const revenueTrend = isCoursera ? (courseraRevenueCount ? `from manually imported report — ${courseraRevenueCount}/${coursera.length} courses` : 'not tracked for Coursera')
-    : isCourseraCin ? (courseraCinRevenueCount ? `from manually imported report — ${courseraCinRevenueCount}/${courseraCin.length} courses` : 'not tracked for Coursera CIN')
+    : isCourseraCin ? (courseraCinRevenueCount ? `from manually imported report — ${courseraCinRevenueCount}/${cinLive.length} courses` : 'not tracked for Coursera CIN')
     : isFutureLearn ? 'not exposed to partners' : isGo1 ? 'not yet available'
     : isLinkedIn ? 'no revenue in the instructor portal'
     : isAll ? `Udemy + Coursera (${courseraRevenueCount}/${coursera.length} courses) — FutureLearn/Go1 not tracked`
@@ -461,10 +466,11 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
       } actions={isUdemy || isAll ? <button className="btn btn-primary" onClick={() => exportCsv(udemy)}>↓ Export CSV</button> : undefined} />
       <div className="kpi-grid">
         <Kpi icon="📚" bg="rgba(0,47,167,.09)" fg="#002fa7" label="Total Courses" value={num(courses)}
-          trend={isAll ? `${udemy.length} Udemy · ${courStats.count} Coursera · ${flStats.count} FutureLearn · ${go1Stats.count} Go1`
-            : isUdemy ? 'Udemy' : isCoursera ? 'Coursera' : isCourseraCin ? 'Coursera CIN' : isFutureLearn ? 'FutureLearn' : 'Go1'} />
+          trend={isAll ? `${udemy.length} Udemy · ${courStats.count} Coursera · ${courCinStats.count} CIN · ${flStats.count} FutureLearn · ${liStats.count} LinkedIn · ${go1Stats.count} Go1`
+            // LinkedIn used to fall through to 'Go1' here.
+            : isUdemy ? 'Udemy' : isCoursera ? 'Coursera' : isCourseraCin ? `Coursera CIN${courCinStats.drafts ? ` · ${courCinStats.drafts} drafts not counted` : ''}` : isFutureLearn ? 'FutureLearn' : isLinkedIn ? 'LinkedIn Learning' : 'Go1'} />
         <Kpi icon="👥" bg="#cce5ff" fg="#0066cc" label="Total Enrollments" value={num(enroll)}
-          trend={isAll ? 'Udemy + Coursera + FutureLearn + Go1 (all lifetime)' : isFutureLearn ? `known — ${flStats.known}/${flStats.count} courses` : isGo1 ? `lifetime${go1Stats.firstMonth ? ` (since ${go1Stats.firstMonth})` : ''}` : 'across the portfolio'} />
+          trend={isAll ? 'all six platforms, lifetime — LinkedIn counts learners' : isFutureLearn ? `known — ${flStats.known}/${flStats.count} courses` : isGo1 ? `lifetime${go1Stats.firstMonth ? ` (since ${go1Stats.firstMonth})` : ''}` : 'across the portfolio'} />
         <Kpi icon="💵" bg="#dcfce7" fg="#10b981" label="Lifetime Revenue" value={revenueValue} trend={revenueTrend} />
         <Kpi icon="⭐" bg="#fef3c7" fg="#f59e0b" label="Average Rating" value={ratingValue ? ratingValue.toFixed(2) : '—'} trend={ratingTrend} />
         {(isUdemy || isAll) && (
@@ -723,7 +729,11 @@ function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, re
     <>
       <Header crumb={`COURSES · ${label.toUpperCase()}`} title={label} sub={withRevenue.length ? `Partner course metrics — revenue from a manually imported report (${withRevenue.length}/${rows.length} courses)` : 'Partner course metrics'} actions={<button className="btn btn-secondary" onClick={() => exportCourseraCsv(data)}>⬇ Export CSV</button>} />
       <div className="kpi-grid">
-        <Kpi icon="📚" bg="#cce5ff" fg="#0066cc" label="Courses" value={num(rows.length)} />
+        {/* Launched courses. The CIN catalogue includes unlaunched drafts, and the
+            table below still lists them (their status says Draft) — but they
+            are not courses on sale, so the tile does not count them. */}
+        <Kpi icon="📚" bg="#cce5ff" fg="#0066cc" label="Courses" value={num(rows.filter((c) => String(c.status || '').toLowerCase() !== 'draft').length)}
+          trend={rows.some((c) => String(c.status || '').toLowerCase() === 'draft') ? `${rows.filter((c) => String(c.status || '').toLowerCase() === 'draft').length} drafts listed below, not counted` : undefined} />
         <Kpi icon="👥" bg="#cce5ff" fg="#0066cc" label="Enrollments" value={num(totE)} />
         <Kpi icon="🎓" bg="#dcfce7" fg="#10b981" label="Completions" value={num(totC)} trend={`${Math.round((totC / (totE || 1)) * 100)}% overall`} />
         <Kpi icon="⭐" bg="#fef3c7" fg="#f59e0b" label="Avg Rating" value={avgR ? avgR.toFixed(2) : '—'} />
