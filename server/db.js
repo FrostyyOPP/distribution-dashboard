@@ -479,6 +479,24 @@ db.exec(`
   -- API — the catalogue. go1_courses and go1_course_history are ACTIVITY
   -- tables: they list only courses someone studied that month, so as a
   -- catalogue they missed every course nobody had started (145 vs 182 live).
+  -- Courses for Dummies — the third Coursera partner console (after Starweaver
+  -- and CIN). Every course from the console's own table, with Looker's figures
+  -- added for the launched ones. See scrapeCourseraDummies.js.
+  CREATE TABLE IF NOT EXISTS coursera_dummies_courses (
+    slug TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    status TEXT,
+    date_kind TEXT,
+    date TEXT,
+    domain TEXT,
+    launch_date TEXT,
+    enrollments INTEGER,
+    completions INTEGER,
+    completion_rate REAL,
+    rating REAL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS go1_catalog (
     lo_id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -1485,6 +1503,29 @@ const insertGo1CourseStmt = db.prepare(
   `INSERT INTO go1_courses (name, enrolments, completions, total_minutes, avg_session_minutes, month, updated_at)
    VALUES (?, ?, ?, ?, ?, ?, ?)`
 );
+const insertDummiesStmt = db.prepare(
+  `INSERT INTO coursera_dummies_courses (slug, name, status, date_kind, date, domain, launch_date, enrollments, completions, completion_rate, rating, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+);
+export function writeCourseraDummiesCourses(courses) {
+  const ts = nowIso();
+  return guardedReplaceAll(
+    'coursera_dummies_courses', courses,
+    (c) => insertDummiesStmt.run(c.slug, c.name, c.status ?? null, c.dateKind ?? null, c.date ?? null, c.domain ?? null,
+      c.launchDate ?? null, c.enrollments ?? null, c.completions ?? null, c.completionRate ?? null, c.rating ?? null, ts),
+    { job: 'coursera_dummies_courses' }
+  );
+}
+export function readCourseraDummiesCourses() {
+  const courses = db.prepare('SELECT * FROM coursera_dummies_courses ORDER BY name').all().map((r) => ({
+    id: r.slug, slug: r.slug, name: r.name, status: r.status, dateKind: r.date_kind, date: r.date,
+    domain: r.domain, launchDate: r.launch_date, enrollments: r.enrollments, completions: r.completions,
+    completionRate: r.completion_rate, rating: r.rating,
+  }));
+  const scrapedAt = db.prepare('SELECT MAX(updated_at) AS t FROM coursera_dummies_courses').get().t;
+  return { courses, scrapedAt };
+}
+
 const insertGo1CatalogStmt = db.prepare(
   `INSERT INTO go1_catalog (lo_id, title, type, language, state, provider, rating, ratings_count, duration_minutes, url, updated_at)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -1601,7 +1642,7 @@ const ALL_TABLES = [
   'coursera_revenue_quarterly', 'coursera_course_items', 'coursera_instructor_profiles',
   'coursera_cin_courses', 'coursera_cin_metrics', 'coursera_cin_overview_kpis', 'coursera_rating_history',
   'linkedin_courses', 'linkedin_revenue', 'revenue_master',
-  'futurelearn_courses', 'go1_catalog', 'go1_courses', 'go1_course_history', 'engagement_course', 'engagement_monthly', 'engagement_meta', 'engagement_ub_monthly',
+  'futurelearn_courses', 'coursera_dummies_courses', 'go1_catalog', 'go1_courses', 'go1_course_history', 'engagement_course', 'engagement_monthly', 'engagement_meta', 'engagement_ub_monthly',
   'engagement_course_monthly',
 ];
 // Most scrape tables stamp `updated_at`; a few use a different column name.
@@ -1837,6 +1878,7 @@ const PLATFORM_SOURCES = {
           ['captions', 'Captions'], ['coupons', 'Coupons']],
   coursera: [['coursera_metrics', 'Enrollments & ratings'], ['coursera_course_status', 'Status & reviews']],
   coursera_cin: [['coursera_cin_metrics', 'Enrollments & ratings'], ['coursera_cin_courses', 'Course list']],
+  coursera_dummies: [['coursera_dummies_courses', 'Courses & enrollments']],
   futurelearn: [['futurelearn_courses', 'Courses & enrollment']],
   linkedin: [['linkedin_courses', 'Learners, shares & likes']],
   go1: [['go1_catalog', 'Course catalogue'], ['go1_courses', 'Latest month'], ['go1_course_history', 'Monthly history']],

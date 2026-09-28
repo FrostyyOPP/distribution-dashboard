@@ -44,6 +44,7 @@ export default function AppV2() {
   const [coursera, setCoursera] = useState([]);
   const [courseraQuarters, setCourseraQuarters] = useState([]);
   const [courseraCin, setCourseraCin] = useState([]);
+  const [courseraDummies, setCourseraDummies] = useState([]);
   const [courseraReviews, setCourseraReviews] = useState({});
   const [courseraCinReviews, setCourseraCinReviews] = useState({});
   const [futurelearn, setFuturelearn] = useState([]);
@@ -83,6 +84,7 @@ export default function AppV2() {
       setCoursera(d.courses || d.results || []);
       setCourseraQuarters(d.revenueQuarters || []);
     }).catch(() => {});
+    fetch('/api/coursera-dummies/courses').then((r) => r.json()).then((d) => setCourseraDummies(d.courses || [])).catch(() => {});
     fetch('/api/coursera-cin/metrics').then((r) => r.json()).then((d) => setCourseraCin(d.courses || d.results || [])).catch(() => {});
     fetch('/api/coursera/reviews').then((r) => r.json()).then((d) => setCourseraReviews(d.bySlug || {})).catch(() => {});
     fetch('/api/coursera-cin/reviews').then((r) => r.json()).then((d) => setCourseraCinReviews(d.bySlug || {})).catch(() => {});
@@ -145,18 +147,19 @@ export default function AppV2() {
           <button className="btn btn-secondary menu-btn" style={{ marginBottom: 16 }} onClick={() => setSideOpen((o) => !o)}>☰ Menu</button>
           {view !== 'settings' && <StaleBanner freshness={freshness} platform={platform} />}
           <div className="platform-tabs">
-            {[['all', 'All Platforms'], ['udemy', 'Udemy'], ['coursera', 'Coursera'], ['coursera_cin', 'Coursera CIN'], ['futurelearn', 'FutureLearn'], ['linkedin', 'LinkedIn'], ['go1', 'Go1']].map(([k, l]) => (
-              <button key={k} className={'ptab' + (platform === k ? ' active' : '') + (k === 'coursera' || k === 'coursera_cin' ? ' p-coursera' : '')} onClick={() => setPlatform(k)}>{l}</button>
+            {[['all', 'All Platforms'], ['udemy', 'Udemy'], ['coursera', 'Coursera'], ['coursera_cin', 'Coursera CIN'], ['coursera_dummies', 'Courses for Dummies'], ['futurelearn', 'FutureLearn'], ['linkedin', 'LinkedIn'], ['go1', 'Go1']].map(([k, l]) => (
+              <button key={k} className={'ptab' + (platform === k ? ' active' : '') + (k === 'coursera' || k === 'coursera_cin' || k === 'coursera_dummies' ? ' p-coursera' : '')} onClick={() => setPlatform(k)}>{l}</button>
             ))}
           </div>
-          {view === 'overview' && <Overview udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} linkedin={linkedin} go1={go1.courses} go1Lifetime={go1Lifetime} go1Catalog={go1Catalog} totalRevenue={totalRevenue} platform={platform} monthly={monthly} engagement={engagement} />}
-          {view === 'watchlist' && <Watchlist bookmarks={bookmarks} udemy={udemy} coursera={coursera} courseraCin={courseraCin} futurelearn={futurelearn} linkedin={linkedin.courses} go1={go1Lifetime.courses.length ? go1Lifetime.courses : go1.courses} platform={platform} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} onOpen={setSelected} />}
+          {view === 'overview' && <Overview udemy={udemy} coursera={coursera} courseraCin={courseraCin} courseraDummies={courseraDummies} futurelearn={futurelearn} linkedin={linkedin} go1={go1.courses} go1Lifetime={go1Lifetime} go1Catalog={go1Catalog} totalRevenue={totalRevenue} platform={platform} monthly={monthly} engagement={engagement} />}
+          {view === 'watchlist' && <Watchlist bookmarks={bookmarks} udemy={udemy} coursera={coursera} courseraCin={courseraCin} courseraDummies={courseraDummies} futurelearn={futurelearn} linkedin={linkedin.courses} go1={go1Lifetime.courses.length ? go1Lifetime.courses : go1.courses} platform={platform} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} onOpen={setSelected} />}
           {view === 'courses' && (
             /* key by platform — both tabs render CourseraView, and without a
                distinct key React reuses the instance and carries the search
                term and sort over to the other catalog. */
             platform === 'coursera' ? <CourseraView key="coursera" rows={coursera} quarters={courseraQuarters} reviewsBySlug={courseraReviews} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'coursera_cin' ? <CourseraView key="coursera_cin" rows={courseraCin} label="Coursera CIN" showInstructorCheck={false} reviewsBySlug={courseraCinReviews} platform="coursera_cin" isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
+            : platform === 'coursera_dummies' ? <CourseraView key="coursera_dummies" rows={courseraDummies} label="Courses for Dummies" showInstructorCheck={false} platform="coursera_dummies" isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'futurelearn' ? <FutureLearnView rows={futurelearn} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'linkedin' ? <LinkedInView data={linkedin} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'go1' ? <Go1View rows={go1.courses} month={go1.month} lifetime={go1Lifetime} catalog={go1Catalog} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
@@ -166,6 +169,8 @@ export default function AppV2() {
             ? <CourseraEarnings rows={coursera} label="Coursera" />
             : platform === 'coursera_cin'
             ? <CourseraEarnings rows={courseraCin} label="Coursera CIN" />
+            : platform === 'coursera_dummies'
+            ? <PlatformUnavailable platform={platform} title="Earnings" note="Revenue for Courses for Dummies isn't imported yet. The console has a Revenue Disbursement Report; once reports are imported, earnings appear here as they do for Coursera and CIN." />
             : platform === 'futurelearn'
             ? <PlatformUnavailable platform={platform} title="Earnings" note="FutureLearn doesn't expose partner revenue — earnings tracking is Udemy-only." />
             : platform === 'go1'
@@ -173,13 +178,13 @@ export default function AppV2() {
             : platform === 'linkedin'
             ? <PlatformUnavailable platform={platform} title="Earnings" note="The LinkedIn Learning instructor portal exposes no revenue at all — only learners, shares and likes." />
             : <Earnings udemy={udemy} totalRevenue={totalRevenue} monthly={monthly} platform={platform} coursera={coursera} />)}
-          {view === 'minutes' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
+          {view === 'minutes' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'coursera_dummies' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Minutes" note="Minutes-consumed tracking is a Udemy feature — this platform's courses aren't covered here." />
             : <MinutesReport udemy={udemy} />)}
-          {view === 'captions' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
+          {view === 'captions' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'coursera_dummies' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Captions" note="Caption localization is a Udemy feature — this platform's courses aren't covered here." />
             : <Captions udemy={udemy} onRefresh={load} />)}
-          {view === 'coupons' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
+          {view === 'coupons' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'coursera_dummies' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Coupons" note="Coupon tracking is a Udemy feature — this platform doesn't have promotional codes tracked here." />
             : <Coupons udemy={udemy} />)}
           {view === 'settings' && <Settings conn={conn} dark={dark} setDark={setDark} lastUpdate={lastUpdate} lastRun={lastRun} onRefresh={load} />}
@@ -193,10 +198,11 @@ export default function AppV2() {
 // ---------------- Overview ----------------
 const coursraPct = (c) => { const v = c.completionRate; return v == null ? null : (v <= 1 ? v * 100 : v); };
 
-function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go1Lifetime, go1Catalog = { courses: [] }, totalRevenue, platform, monthly, engagement }) {
+function Overview({ udemy, coursera, courseraCin, courseraDummies = [], futurelearn, linkedin, go1, go1Lifetime, go1Catalog = { courses: [] }, totalRevenue, platform, monthly, engagement }) {
   const isUdemy = platform === 'udemy';
   const isCoursera = platform === 'coursera';
   const isCourseraCin = platform === 'coursera_cin';
+  const isCourseraDummies = platform === 'coursera_dummies';
   const isFutureLearn = platform === 'futurelearn';
   const isLinkedIn = platform === 'linkedin';
   const isGo1 = platform === 'go1';
@@ -209,6 +215,13 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
   // LIVE CIN COURSES EXCLUDE DRAFTS — the test the catalogue feed already uses.
   // Counting every row put 5 unlaunched drafts into the total (325 vs 320).
   const cinLive = courseraCin.filter((c) => String(c.status || '').toLowerCase() !== 'draft');
+  // COURSES FOR DUMMIES: live means launched. New and Pending courses are in
+  // the console but not yet open to learners, so they are shown, not counted.
+  const dumLaunched = courseraDummies.filter((c) => c.status && !NOT_LIVE.has(String(c.status).toLowerCase()));
+  const dumByStatus = courseraDummies.reduce((a, c) => ((a[c.status || 'unknown'] = (a[c.status || 'unknown'] || 0) + 1), a), {});
+  const dumStats = { count: dumLaunched.length, all: courseraDummies.length, enroll: courseraDummies.reduce((s, c) => s + (c.enrollments || 0), 0) };
+  const dumRated = courseraDummies.filter((c) => c.rating);
+  const dumAvg = dumRated.length ? dumRated.reduce((s, c) => s + Number(c.rating), 0) / dumRated.length : 0;
   const courCinStats = { count: cinLive.length, drafts: courseraCin.length - cinLive.length, enroll: cinLive.reduce((s, c) => s + (c.enrollments || 0), 0) };
   // LIVE means in progress AND public — the same test the catalogue feed uses.
   // futurelearn.length counted drafts, finished runs and private runs too (204
@@ -251,19 +264,20 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
   const liRows = (linkedin && linkedin.courses) || [];
   const liTotals = (linkedin && linkedin.totals) || { learners: 0, shares: 0, likes: 0 };
   const liStats = { count: liRows.length, enroll: liTotals.learners || 0 };
-  const courses = isUdemy ? udemy.length : isCoursera ? courStats.count : isCourseraCin ? courCinStats.count : isFutureLearn ? flStats.count : isLinkedIn ? liStats.count : isGo1 ? go1Stats.count
+  const courses = isUdemy ? udemy.length : isCoursera ? courStats.count : isCourseraCin ? courCinStats.count : isCourseraDummies ? dumStats.count : isFutureLearn ? flStats.count : isLinkedIn ? liStats.count : isGo1 ? go1Stats.count
     // Every platform. LinkedIn (added 2026-09-15) and Coursera CIN were never
     // added to this sum, so "Total Courses" left out 375 of 1,026.
-    : udemy.length + courStats.count + courCinStats.count + flStats.count + liStats.count + go1Stats.count;
-  const enroll = isUdemy ? uEnroll : isCoursera ? courStats.enroll : isCourseraCin ? courCinStats.enroll : isFutureLearn ? flStats.enroll : isLinkedIn ? liStats.enroll : isGo1 ? go1Stats.enroll
-    : uEnroll + courStats.enroll + courCinStats.enroll + flStats.enroll + liStats.enroll + go1Stats.enroll;
+    : udemy.length + courStats.count + courCinStats.count + dumStats.count + flStats.count + liStats.count + go1Stats.count;
+  const enroll = isUdemy ? uEnroll : isCoursera ? courStats.enroll : isCourseraCin ? courCinStats.enroll : isCourseraDummies ? dumStats.enroll : isFutureLearn ? flStats.enroll : isLinkedIn ? liStats.enroll : isGo1 ? go1Stats.enroll
+    : uEnroll + courStats.enroll + courCinStats.enroll + dumStats.enroll + flStats.enroll + liStats.enroll + go1Stats.enroll;
   const withPaul = udemy.filter((c) => c.hasPaul).length;
   const finGap = udemy.filter((c) => c.isFinance && !c.hasGlobecon).length;
   const ubCount = udemy.filter((c) => c.is_udemy_business).length;
   const minutesWatched = engagement.totalMinutes != null ? Math.round(engagement.totalMinutes) : null;
 
-  const ratingValue = isCoursera ? cAvg : isCourseraCin ? cCinAvg : isGo1 ? (go1Avg || null) : (isFutureLearn || isLinkedIn) ? null : uAvg;
+  const ratingValue = isCoursera ? cAvg : isCourseraCin ? cCinAvg : isCourseraDummies ? (dumAvg || null) : isGo1 ? (go1Avg || null) : (isFutureLearn || isLinkedIn) ? null : uAvg;
   const ratingTrend = isCoursera ? `across ${cRated.length} rated courses` : isCourseraCin ? `across ${cCinRated.length} rated courses`
+    : isCourseraDummies ? (dumRated.length ? `across ${dumRated.length} rated courses` : 'no ratings until courses launch')
     : isFutureLearn ? 'not offered by FutureLearn' : isGo1 ? (go1Rated.length ? `across ${go1Rated.length} rated courses · ${num(go1RatingCount)} ratings` : 'no ratings yet')
     : isLinkedIn ? 'not exposed by the instructor portal'
     : isAll ? `Udemy only — based on ${num(reviews)} reviews` : `based on ${num(reviews)} reviews`;
@@ -276,10 +290,12 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
   const courseraCinRevenueCount = cinLive.filter((c) => c.revenue != null).length;
   const revenueValue = isCoursera ? (courseraRevenueCount ? usd(courseraRevenueTotal) : '—')
     : isCourseraCin ? (courseraCinRevenueCount ? usd(courseraCinRevenueTotal) : '—')
+    : isCourseraDummies ? '—'
     : (isFutureLearn || isGo1 || isLinkedIn) ? '—'
     : isAll ? ((totalRevenue == null && !courseraRevenueCount) ? '—' : usd((totalRevenue || 0) + courseraRevenueTotal))
     : (totalRevenue == null ? '—' : usd(totalRevenue));
   const revenueTrend = isCoursera ? (courseraRevenueCount ? `from manually imported report — ${courseraRevenueCount}/${coursera.length} courses` : 'not tracked for Coursera')
+    : isCourseraDummies ? 'not imported yet'
     : isCourseraCin ? (courseraCinRevenueCount ? `from manually imported report — ${courseraCinRevenueCount}/${cinLive.length} courses` : 'not tracked for Coursera CIN')
     : isFutureLearn ? 'not exposed to partners' : isGo1 ? 'not yet available'
     : isLinkedIn ? 'no revenue in the instructor portal'
@@ -358,6 +374,20 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
           </div>
         </div>
       </>
+    );
+  } else if (isCourseraDummies) {
+    const byCourse = [...courseraDummies].filter((c) => c.enrollments > 0).sort((a, b) => b.enrollments - a.enrollments).slice(0, 8)
+      .map((c) => ({ label: c.name, value: c.enrollments, color: '#0066cc' }));
+    const statusBars = Object.entries(dumByStatus).sort((a, b) => b[1] - a[1])
+      .map(([label, value]) => ({ label: label.charAt(0).toUpperCase() + label.slice(1), value, color: label === 'pending' ? '#f59e0b' : label === 'new' ? '#9ca3af' : '#10b981' }));
+    charts = (
+      <div className="charts-section">
+        <h2 className="section-title">📊 Courses for Dummies</h2>
+        <div className="charts-grid">
+          <div className="chart-card"><h3>Courses by status</h3>{statusBars.length ? <BarChart data={statusBars} /> : <div className="chart-placeholder">No data</div>}</div>
+          <div className="chart-card"><h3>Enrollments by Course (top 8)</h3>{byCourse.length ? <BarChart data={byCourse} /> : <div className="chart-placeholder">No enrollments yet — the first sessions start {courseraDummies.find((c) => c.dateKind === 'Starts on')?.date || 'soon'}</div>}</div>
+        </div>
+      </div>
     );
   } else if (isCourseraCin) {
     const byCourse = [...courseraCin].filter((c) => c.enrollments > 0).sort((a, b) => b.enrollments - a.enrollments).slice(0, 8)
@@ -461,14 +491,15 @@ function Overview({ udemy, coursera, courseraCin, futurelearn, linkedin, go1, go
   return (
     <>
       <Header crumb="OVERVIEW" title="Dashboard" sub={
-        isUdemy ? 'Your Udemy portfolio' : isCoursera ? 'Your Coursera portfolio' : isCourseraCin ? 'Coursera CIN partner portfolio' : isFutureLearn ? 'Your FutureLearn portfolio'
+        isUdemy ? 'Your Udemy portfolio' : isCoursera ? 'Your Coursera portfolio' : isCourseraCin ? 'Coursera CIN partner portfolio' : isCourseraDummies ? 'Courses for Dummies on Coursera' : isFutureLearn ? 'Your FutureLearn portfolio'
         : isGo1 ? 'Your Go1 portfolio' : 'Your teaching portfolio at a glance'
       } actions={isUdemy || isAll ? <button className="btn btn-primary" onClick={() => exportCsv(udemy)}>↓ Export CSV</button> : undefined} />
       <div className="kpi-grid">
         <Kpi icon="📚" bg="rgba(0,47,167,.09)" fg="#002fa7" label="Total Courses" value={num(courses)}
-          trend={isAll ? `${udemy.length} Udemy · ${courStats.count} Coursera · ${courCinStats.count} CIN · ${flStats.count} FutureLearn · ${liStats.count} LinkedIn · ${go1Stats.count} Go1`
+          trend={isAll ? `${udemy.length} Udemy · ${courStats.count} Coursera · ${courCinStats.count} CIN · ${dumStats.count} Dummies · ${flStats.count} FutureLearn · ${liStats.count} LinkedIn · ${go1Stats.count} Go1`
             // LinkedIn used to fall through to 'Go1' here.
-            : isUdemy ? 'Udemy' : isCoursera ? 'Coursera' : isCourseraCin ? `Coursera CIN${courCinStats.drafts ? ` · ${courCinStats.drafts} drafts not counted` : ''}` : isFutureLearn ? 'FutureLearn' : isLinkedIn ? 'LinkedIn Learning' : 'Go1'} />
+            : isUdemy ? 'Udemy' : isCoursera ? 'Coursera' : isCourseraCin ? `Coursera CIN${courCinStats.drafts ? ` · ${courCinStats.drafts} drafts not counted` : ''}`
+            : isCourseraDummies ? `launched · ${Object.entries(dumByStatus).filter(([k]) => NOT_LIVE.has(k)).map(([k, v]) => `${v} ${k}`).join(' · ') || 'none waiting'} not yet counted` : isFutureLearn ? 'FutureLearn' : isLinkedIn ? 'LinkedIn Learning' : 'Go1'} />
         <Kpi icon="👥" bg="#cce5ff" fg="#0066cc" label="Total Enrollments" value={num(enroll)}
           trend={isAll ? 'all six platforms, lifetime — LinkedIn counts learners' : isFutureLearn ? `known — ${flStats.known}/${flStats.count} courses` : isGo1 ? `lifetime${go1Stats.firstMonth ? ` (since ${go1Stats.firstMonth})` : ''}` : 'across the portfolio'} />
         <Kpi icon="💵" bg="#dcfce7" fg="#10b981" label="Lifetime Revenue" value={revenueValue} trend={revenueTrend} />
@@ -519,7 +550,7 @@ function ActiveFilter({ f, shown, total }) {
     </div>
   );
 }
-const PLATFORM_LABELS = { coursera: 'Coursera', coursera_cin: 'Coursera CIN', futurelearn: 'FutureLearn', go1: 'Go1' };
+const PLATFORM_LABELS = { coursera: 'Coursera', coursera_cin: 'Coursera CIN', coursera_dummies: 'Courses for Dummies', futurelearn: 'FutureLearn', go1: 'Go1' };
 function PlatformUnavailable({ title, note, platform }) {
   return (
     <>
@@ -691,7 +722,20 @@ const STATUS_STYLE = {
   launched: { bg: '#dcfce7', fg: '#10b981', text: 'Launched' },
   draft: { bg: '#fef3c7', fg: '#f59e0b', text: 'Draft' },
   preenroll: { bg: '#eef2ff', fg: '#4f46e5', text: 'Preenroll' },
+  // The Dummies console's pre-launch states.
+  pending: { bg: '#fef3c7', fg: '#b45309', text: 'Pending' },
+  new: { bg: '#f3f4f6', fg: '#6b7280', text: 'New' },
 };
+// NOT OPEN TO LEARNERS YET. CIN has drafts; the Dummies console adds New and
+// Pending (a session scheduled but not started). Shown in the tables, never
+// counted as courses on sale.
+const NOT_LIVE = new Set(['draft', 'new', 'pending', 'preenroll', 'unscheduled']);
+function notLiveNote(rows) {
+  const n = {};
+  rows.forEach((c) => { const k = String(c.status || '').toLowerCase(); if (NOT_LIVE.has(k)) n[k] = (n[k] || 0) + 1; });
+  const parts = Object.entries(n).map(([k, v]) => `${v} ${k === 'draft' && v > 1 ? 'drafts' : k}`);
+  return parts.length ? `${parts.join(' · ')} listed below, not counted` : undefined;
+}
 function StatusBadge({ status }) {
   if (!status) return <span className="muted">—</span>;
   const s = STATUS_STYLE[status] || { bg: '#f3f4f6', fg: '#6b7280', text: status };
@@ -732,8 +776,8 @@ function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, re
         {/* Launched courses. The CIN catalogue includes unlaunched drafts, and the
             table below still lists them (their status says Draft) — but they
             are not courses on sale, so the tile does not count them. */}
-        <Kpi icon="📚" bg="#cce5ff" fg="#0066cc" label="Courses" value={num(rows.filter((c) => String(c.status || '').toLowerCase() !== 'draft').length)}
-          trend={rows.some((c) => String(c.status || '').toLowerCase() === 'draft') ? `${rows.filter((c) => String(c.status || '').toLowerCase() === 'draft').length} drafts listed below, not counted` : undefined} />
+        <Kpi icon="📚" bg="#cce5ff" fg="#0066cc" label="Courses" value={num(rows.filter((c) => !NOT_LIVE.has(String(c.status || '').toLowerCase())).length)}
+          trend={notLiveNote(rows)} />
         <Kpi icon="👥" bg="#cce5ff" fg="#0066cc" label="Enrollments" value={num(totE)} />
         <Kpi icon="🎓" bg="#dcfce7" fg="#10b981" label="Completions" value={num(totC)} trend={`${Math.round((totC / (totE || 1)) * 100)}% overall`} />
         <Kpi icon="⭐" bg="#fef3c7" fg="#f59e0b" label="Avg Rating" value={avgR ? avgR.toFixed(2) : '—'} />
@@ -1001,11 +1045,11 @@ function Go1View({ rows, month, lifetime, catalog = { courses: [], byLanguage: {
 }
 
 // ---------------- Watchlist (cross-platform bookmarked courses) ----------------
-function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, linkedin, go1, platform, isBookmarked, toggleBookmark, onOpen }) {
+function Watchlist({ bookmarks, udemy, coursera, courseraCin, courseraDummies = [], futurelearn, linkedin, go1, platform, isBookmarked, toggleBookmark, onOpen }) {
   const byPlatform = useMemo(() => {
     // linkedin was absent here, so a bookmarked LinkedIn course was dropped:
     // the star saved server-side but the Watchlist never showed it.
-    const g = { udemy: [], coursera: [], coursera_cin: [], futurelearn: [], linkedin: [], go1: [] };
+    const g = { udemy: [], coursera: [], coursera_cin: [], coursera_dummies: [], futurelearn: [], linkedin: [], go1: [] };
     bookmarks.forEach((b) => { if (g[b.platform]) g[b.platform].push(b); });
     return g;
   }, [bookmarks]);
@@ -1013,6 +1057,7 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, linke
   const udemyRows = byPlatform.udemy.map((b) => udemy.find((c) => String(c.id) === String(b.courseKey))).filter(Boolean);
   const courseraRows = byPlatform.coursera.map((b) => coursera.find((c) => (c.slug || c.name) === b.courseKey)).filter(Boolean);
   const courseraCinRows = byPlatform.coursera_cin.map((b) => courseraCin.find((c) => (c.slug || c.name) === b.courseKey)).filter(Boolean);
+  const courseraDummiesRows = byPlatform.coursera_dummies.map((b) => courseraDummies.find((c) => (c.slug || c.name) === b.courseKey)).filter(Boolean);
   const futurelearnRows = byPlatform.futurelearn.map((b) => futurelearn.find((c) => c.slug === b.courseKey)).filter(Boolean);
   const linkedinRows = byPlatform.linkedin.map((b) => (linkedin || []).find((c) => c.title === b.courseKey)).filter(Boolean);
   const go1Rows = byPlatform.go1.map((b) => go1.find((c) => c.name === b.courseKey)).filter(Boolean);
@@ -1023,9 +1068,9 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, linke
   const showAll = !platform || platform === 'all';
   const show = (key) => showAll || platform === key;
   const total = (show('udemy') ? udemyRows.length : 0) + (show('coursera') ? courseraRows.length : 0)
-    + (show('coursera_cin') ? courseraCinRows.length : 0) + (show('futurelearn') ? futurelearnRows.length : 0)
+    + (show('coursera_cin') ? courseraCinRows.length : 0) + (show('coursera_dummies') ? courseraDummiesRows.length : 0) + (show('futurelearn') ? futurelearnRows.length : 0)
     + (show('linkedin') ? linkedinRows.length : 0) + (show('go1') ? go1Rows.length : 0);
-  const TAB_LABEL = { udemy: 'Udemy', coursera: 'Coursera', coursera_cin: 'Coursera CIN',
+  const TAB_LABEL = { udemy: 'Udemy', coursera: 'Coursera', coursera_cin: 'Coursera CIN', coursera_dummies: 'Courses for Dummies',
     futurelearn: 'FutureLearn', linkedin: 'LinkedIn', go1: 'Go1' };
 
   // Flatten every platform into one shape for CSV export. Fields a platform
@@ -1052,6 +1097,11 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, linke
       platform: 'Coursera CIN', course: c.name, status: c.status, enrollments: c.enrollments,
       rating: rating2(c.rating), completions: c.completions, revenue: c.revenue,
       link: c.slug ? `https://www.coursera.org/learn/${c.slug}` : '', addedAt: when('coursera_cin', c.slug || c.name),
+    })),
+    ...courseraDummiesRows.map((c) => ({
+      platform: 'Courses for Dummies', course: c.name, status: c.status, enrollments: c.enrollments,
+      rating: rating2(c.rating), completions: c.completions, revenue: null,
+      link: c.slug ? `https://www.coursera.org/learn/${c.slug}` : '', addedAt: when('coursera_dummies', c.slug || c.name),
     })),
     ...futurelearnRows.map((c) => ({
       platform: 'FutureLearn', course: c.title, status: c.status, enrollments: c.enrollment,
@@ -1133,6 +1183,20 @@ function Watchlist({ bookmarks, udemy, coursera, courseraCin, futurelearn, linke
               <td style={{ textAlign: 'right' }}>{c.rating ? Number(c.rating).toFixed(2) : '—'}</td>
               <td style={{ textAlign: 'right' }}>{num(c.enrollments)}</td>
               <td style={{ textAlign: 'right' }}>{c.revenue != null ? usd(c.revenue) : '—'}</td>
+            </tr>
+          );
+        })}
+      {section('coursera_dummies', 'Courses for Dummies', courseraDummiesRows,
+        <><th className="no-sort"></th><th style={{ textAlign: 'left' }}>Course</th><th style={{ textAlign: 'left' }}>Status</th><th>Rating</th><th>Enrollments</th></>,
+        (c, i) => {
+          const key = c.slug || c.name;
+          return (
+            <tr key={i}>
+              <td><BookmarkButton active={isBookmarked('coursera_dummies', key)} onClick={() => toggleBookmark('coursera_dummies', key, c.name)} /></td>
+              <td style={{ fontWeight: 500 }}>{c.name}</td>
+              <td><StatusBadge status={c.status} /></td>
+              <td style={{ textAlign: 'right' }}>{c.rating ? Number(c.rating).toFixed(2) : '—'}</td>
+              <td style={{ textAlign: 'right' }}>{num(c.enrollments)}</td>
             </tr>
           );
         })}
@@ -1643,7 +1707,7 @@ function Settings({ conn, dark, setDark, lastUpdate, lastRun, onRefresh }) {
 // shows revenue rather than buried in Settings. On "All Platforms" it lists
 // every platform that is behind, since the overview mixes them all.
 const STALE_DAYS = 2;
-const PLATFORM_NAMES = { udemy: 'Udemy', coursera: 'Coursera', coursera_cin: 'Coursera CIN', futurelearn: 'FutureLearn', linkedin: 'LinkedIn', go1: 'Go1' };
+const PLATFORM_NAMES = { udemy: 'Udemy', coursera: 'Coursera', coursera_cin: 'Coursera CIN', coursera_dummies: 'Courses for Dummies', futurelearn: 'FutureLearn', linkedin: 'LinkedIn', go1: 'Go1' };
 const fmtDay = (iso) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 function StaleBanner({ freshness, platform }) {
   if (!freshness) return null;
