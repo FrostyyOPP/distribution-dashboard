@@ -114,6 +114,14 @@ for (let i = 0; i < courseList.length; i++) {
 process.stdout.write('\n');
 await browser.close();
 
+// NO COURSES FOUND IS A FAILURE. On 2026-09-28 the course list came back
+// empty and this ended "✅ 0/0 with status · 0 reviews", exit 0 — the nightly
+// job counted it a success. Nothing was lost (the writers are guarded), but a
+// run that read nothing must say so, so the retry and the sidebar can see it.
+if (!statusRows.length) {
+  console.error('❌ No Coursera courses were found to check. Nothing written.');
+  process.exit(1);
+}
 writeCourseraCourseStatus(statusRows);
 const reviewResult = writeCourseraReviews(allReviews);
 const withStatus = statusRows.filter((r) => r.status).length;
