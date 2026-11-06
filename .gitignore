@@ -100,3 +100,5 @@ server/session-status.json
 
 # exFAT (Seagate) resource-fork files
 ._*
+.vercel
+.env*

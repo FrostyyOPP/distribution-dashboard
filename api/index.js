@@ -23,10 +23,12 @@ async function storage(method, path, body) {
   if (!res.ok) throw new Error(`Supabase storage ${res.status} on ${path.split('?')[0]}`);
   return res;
 }
-// When the published database was last replaced (its object's updated_at).
+// When the published data was last replaced: the database (after each update)
+// and the Marketing page (after its own 08:30 rebuild), as one stamp.
 async function publishedAt() {
-  const list = await (await storage('POST', `object/list/${BUCKET}`, JSON.stringify({ prefix: 'live/', limit: 100 }))).json();
-  return list.find((o) => o.name === 'dashboard.db.gz')?.updated_at || null;
+  const when = async (prefix, name) => (await (await storage('POST', `object/list/${BUCKET}`, JSON.stringify({ prefix, limit: 100 }))).json())
+    .find((o) => o.name === name)?.updated_at || '';
+  return [await when('live/', 'dashboard.db.gz'), await when('live/marketing/', 'catalog.html')].join(' | ');
 }
 async function download() {
   mkdirSync(DIR, { recursive: true });
@@ -49,7 +51,7 @@ async function getApp() {
   process.env.DASHBOARD_READ_ONLY = '1';
   process.env.MARKETING_DIST = join(DIR, 'marketing');
   process.env.CATALOG_FILE = join(DIR, 'marketing', 'catalog.html');
-  if (loadedStamp) process.env.DASHBOARD_DATA_AS_OF = loadedStamp;
+  if (loadedStamp) process.env.DASHBOARD_DATA_AS_OF = loadedStamp.split(' | ')[0];
   lastCheck = Date.now();
   app = (await import('../server/index.js')).default;
   return app;
@@ -64,7 +66,7 @@ export default async function handler(req, res) {
     // The cause names the network problem (DNS, TLS, refused…); no secrets in it.
     const why = [e.message, e.cause?.code, e.cause?.message].filter(Boolean).join(' — ');
     console.error('data load failed:', why);
-    return res.end(`The online dashboard could not load its data (${why}). Try again in a minute.`);
+    return res.end('The dashboard is loading its latest data. Please refresh in a minute.');   // the reason is in the Vercel logs
   }
   // The database is opened once per instance, so newer data means a fresh
   // instance: once a newer copy is published, this instance answers this request
