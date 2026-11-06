@@ -94,3 +94,9 @@ server/couponReport.mjs
 server/couponWorkbook.py
 # One-off diagnostics written during investigations; never meant to be kept.
 server/_tmp_*.mjs
+
+# login check result, written by checkSessions.js
+server/session-status.json
+
+# exFAT (Seagate) resource-fork files
+._*

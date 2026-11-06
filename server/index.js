@@ -1,5 +1,6 @@
 import 'dotenv/config';
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { readFileSync, writeFileSync, existsSync, unlinkSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { request as httpRequest } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
@@ -30,6 +31,13 @@ const app = express();
 const PORT = process.env.PORT || 5055;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AUTH_FILE = join(__dirname, 'udemy-auth.json');
+// last-update.json / session-status.json: written here by the nightly update; the
+// online copy (api/index.js) downloads them into its own folder instead.
+const STATE_DIR = process.env.DASHBOARD_STATE_DIR || __dirname;
+// The online (Vercel) copy: the same dashboard over the data this Mac publishes
+// (publishCloud.js), read-only — connecting platforms, running scrapers, creating
+// coupons and the like need this Mac and stay on the local dashboard.
+const READ_ONLY = process.env.DASHBOARD_READ_ONLY === '1';
 const COURSERA_AUTH_FILE = join(__dirname, 'coursera-auth.json');
 const FUTURELEARN_AUTH_FILE = join(__dirname, 'futurelearn-auth.json');
 const LINKEDIN_AUTH_FILE = join(__dirname, 'linkedin-auth.json');
@@ -124,8 +132,11 @@ app.use(express.json());
 // 08:30 by the com.starweaver.marketing-tool-refresh launchd agent. It carries
 // only live course titles, links and their SWO/LPS parent + batch; it does not
 // touch this dashboard's revenue or enrollment data.
+// Sibling projects are found in the home folder, not relative to this file: since
+// 2026-10-28 the dashboard itself lives on the Seagate SSD (~/udemy-dashboard is a
+// link), so "two folders up" no longer reaches ~/marketing-tool or ~/starweaver-royalty.
 const CATALOG_FILE =
-  process.env.CATALOG_FILE || join(__dirname, '..', '..', 'marketing-tool', 'dist', 'catalog.html');
+  process.env.CATALOG_FILE || join(homedir(), 'marketing-tool', 'dist', 'catalog.html');
 
 // The catalog lived at /catalog until 2026-09 and that link is already in
 // people's hands (and in the marketing-tool README), so the old path keeps
@@ -160,6 +171,60 @@ app.use((req, res, next) => {
   return res.status(401).send('Authentication required');
 });
 
+app.get('/api/mode', (req, res) => {
+  let dataAsOf = null;
+  try { dataAsOf = statSync(process.env.DASHBOARD_DB_FILE || join(__dirname, 'dashboard.db')).mtime.toISOString(); } catch {}
+  res.json({ readOnly: READ_ONLY, dataAsOf: process.env.DASHBOARD_DATA_AS_OF || dataAsOf });
+});
+if (READ_ONLY) {
+  // Anything that changes data or drives a browser on this Mac.
+  app.use('/api', (req, res, next) => {
+    if (req.method === 'GET' && !/^\/transcripts\/save/.test(req.path)) return next();
+    res.status(403).json({ error: 'This is the read-only online copy of the dashboard. Do this from the dashboard on the office Mac.' });
+  });
+}
+
+// --- Originals catalogue -------------------------------------------------
+// ~/catalogue-live serves the Originals catalogue on 127.0.0.1:5210 and is not
+// exposed itself; this forwards to it so the team reaches it over the one ngrok
+// host we have. Deliberately BELOW the auth gate — unlike /distribution-catalog,
+// the Originals catalogue is confidential, so it inherits the dashboard password.
+const CATALOGUE_ORIGIN = process.env.CATALOGUE_ORIGIN || 'http://127.0.0.1:5210';
+const CATALOGUE_MOUNT = '/originals-catalogue';
+
+app.use(CATALOGUE_MOUNT, express.raw({ type: '*/*', limit: '1mb' }), async (req, res) => {
+  // Without the trailing slash the page's own BASE resolves to "/" and its API calls
+  // would miss the mount entirely. app.use strips the mount, so both spellings arrive
+  // as req.url === '/' — only originalUrl can tell them apart.
+  if (req.originalUrl.split('?')[0] === CATALOGUE_MOUNT) {
+    return res.redirect(302, `${CATALOGUE_MOUNT}/`);
+  }
+  const target = `${CATALOGUE_ORIGIN}${req.url === '/' ? '/index.html' : req.url}`;
+  try {
+    const upstream = await fetch(target, {
+      method: req.method,
+      headers: { accept: req.headers.accept || '*/*', 'content-type': req.headers['content-type'] || '' },
+      body: ['GET', 'HEAD'].includes(req.method) ? undefined : req.body,
+      // A cold refresh sweeps four statuses upstream and takes ~20s.
+      signal: AbortSignal.timeout(120_000),
+    });
+    res.status(upstream.status);
+    // Content-Disposition carries the export's filename; drop it and the team's
+    // download lands as a generic name instead of the edition it was built from.
+    for (const h of ['content-type', 'content-disposition']) {
+      const v = upstream.headers.get(h);
+      if (v) res.set(h, v);
+    }
+    res.set('Cache-Control', 'no-store');
+    res.send(Buffer.from(await upstream.arrayBuffer()));
+  } catch (err) {
+    res
+      .status(502)
+      .type('text/plain')
+      .send(`The Originals catalogue is not running.\n\nStart it with:\n  cd ~/catalogue-live && npm start\n\n(${err.message})\n`);
+  }
+});
+
 // Wrap async route handlers so thrown errors hit the error middleware.
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
@@ -173,9 +238,37 @@ app.get('/api/health', (req, res) => {
 // How old each platform's data is, platform by platform — see db.js.
 app.get('/api/freshness', (req, res) => res.json(readPlatformFreshness()));
 
+// Saved-login status from checkSessions.js (run first in every nightly update).
+// A platform marked expired whose login file has been saved again since that
+// check was reconnected in the meantime, so it is reported as such and the
+// dashboard's banner clears without waiting for the next check.
+const SESSION_FILES = { udemy: 'udemy-auth.json', coursera: 'coursera-auth.json', futurelearn: 'futurelearn-auth.json', go1: 'go1-auth.json', linkedin: 'linkedin-auth.json' };
+function readSessionStatus() {
+  const f = join(STATE_DIR, 'session-status.json');
+  if (!existsSync(f)) return { checkedAt: null, platforms: {} };
+  const st = JSON.parse(readFileSync(f, 'utf8'));
+  for (const [id, v] of Object.entries(st.platforms || {})) {
+    const auth = join(__dirname, SESSION_FILES[id] || '');
+    if (v.status === 'expired' && SESSION_FILES[id] && existsSync(auth) && statSync(auth).mtime > new Date(v.checkedAt)) v.status = 'reconnected';
+  }
+  return st;
+}
+app.get('/api/session-status', (req, res) => res.json(readSessionStatus()));
+// Run the check now (about a minute) — the banner's "Check again".
+let sessionCheck = null;
+app.post('/api/session-status/check', (req, res) => {
+  if (!sessionCheck) {
+    sessionCheck = new Promise((resolve) => {
+      const p = spawn(process.execPath, [join(__dirname, 'checkSessions.js')], { cwd: __dirname, stdio: 'ignore' });
+      p.on('close', resolve); p.on('error', resolve);
+    }).finally(() => { sessionCheck = null; });
+  }
+  sessionCheck.then(() => res.json(readSessionStatus()));
+});
+
 app.get('/api/last-update', (req, res) => {
   let run = null;
-  const lu = join(__dirname, 'last-update.json');
+  const lu = join(STATE_DIR, 'last-update.json');
   if (existsSync(lu)) { try { run = JSON.parse(readFileSync(lu, 'utf8')); } catch {} }
   res.json({ updatedAt: latestUpdatedAt(), lastRun: run });
 });
@@ -496,6 +589,20 @@ app.get('/api/go1/lifetime', (req, res) => {
 
 // Bulk-create coupons. User-triggered write. dryRun:true previews only.
 // Requires a connected session; opens a headed browser to POST to Udemy.
+// The coupon CSV builder reads CSV files in the browser; an .xlsx is sent here
+// only to be read. Returns the first sheet as rows of text. Nothing is stored.
+app.post('/api/coupons/read-sheet', express.raw({ type: () => true, limit: '5mb' }), (req, res) => {
+  try {
+    if (!req.body?.length) throw new Error('empty file');
+    const wb = XLSX.read(req.body, { type: 'buffer' });
+    const name = wb.SheetNames[0];
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '' });
+    res.json({ sheet: name, rows: rows.map((r) => r.map((c) => String(c))) });
+  } catch (e) {
+    res.status(400).json({ error: `Could not read that file: ${e.message}` });
+  }
+});
+
 app.post('/api/coupons/create', (req, res, next) => {
   if (!existsSync(AUTH_FILE)) return res.status(400).json({ error: 'Not connected. Use Connect Udemy first.' });
   import('./couponCreate.js')
@@ -815,7 +922,7 @@ app.get('/api/export.xlsx', (req, res) => {
 // the Marketing Tool's generated catalog is served alongside it. These are
 // registered BEFORE the static/catch-all block below, which otherwise answers
 // every path with the React app.
-const MARKETING_DIST = process.env.MARKETING_DIST || join(__dirname, '..', '..', 'marketing-tool', 'dist');
+const MARKETING_DIST = process.env.MARKETING_DIST || join(homedir(), 'marketing-tool', 'dist');
 const MARKETING_HTML = join(MARKETING_DIST, 'catalog.html');
 
 app.get('/', (req, res) => res.sendFile(join(__dirname, 'home.html')));
@@ -869,7 +976,7 @@ app.get('/api/feed/revenue', (req, res) => res.json(readFeedRevenue(req.query.pl
 // here so the URLs keep working, but note they are only as private as this
 // server is: it is reachable over ngrok behind basic auth, so treat these three
 // as exposed and move them behind their own server if that stops being enough.
-const ROYALTY_PAGES = join(__dirname, '..', '..', 'starweaver-royalty', 'pages');
+const ROYALTY_PAGES = join(homedir(), 'starweaver-royalty', 'pages');
 const royaltyPage = (file) => (req, res) =>
   res.sendFile(join(ROYALTY_PAGES, file), (err) => {
     if (err) res.status(404).send(
@@ -923,6 +1030,10 @@ app.use((err, req, res, next) => {
   res.status(status).json({ error: err.message, status, body: err.body });
 });
 
-app.listen(PORT, () => {
-  console.log(`Distribution Dashboard API running on http://localhost:${PORT}`);
-});
+// On Vercel the app is a function (api/index.js imports it); here it listens.
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`Distribution Dashboard API running on http://localhost:${PORT}`);
+  });
+}
+export default app;

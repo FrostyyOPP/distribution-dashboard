@@ -3,6 +3,7 @@ import './v2.css';
 import CourseDetail from '../CourseDetail.jsx';
 import LocalizeCaptions from '../LocalizeCaptions.jsx';
 import CreateCoupons from '../CreateCoupons.jsx';
+import CouponCsvBuilder from '../CouponCsvBuilder.jsx';
 import ConnectUdemy from '../ConnectUdemy.jsx';
 import ConnectCoursera from '../ConnectCoursera.jsx';
 import ConnectFutureLearn from '../ConnectFutureLearn.jsx';
@@ -56,6 +57,7 @@ export default function AppV2() {
   const [lastUpdate, setLastUpdate] = useState(null);
   const [lastRun, setLastRun] = useState(null);
   const [freshness, setFreshness] = useState(null);
+  const [sessions, setSessions] = useState(null);
   const [view, setView] = useState('overview');
   const [platform, setPlatform] = useState('all');
   const [selected, setSelected] = useState(null);
@@ -64,11 +66,15 @@ export default function AppV2() {
   const [monthly, setMonthly] = useState([]);
   const [engagement, setEngagement] = useState({ totalMinutes: null, activeStudents: null, monthly: [] });
   const [bookmarks, setBookmarks] = useState([]);
+  // The online (Vercel) copy is read-only: no Settings/connect, no watchlist edits.
+  const [mode, setMode] = useState({ readOnly: false, dataAsOf: null });
+  useEffect(() => { fetch('/api/mode').then((r) => r.json()).then(setMode).catch(() => {}); }, []);
 
   const loadBookmarks = () => fetch('/api/bookmarks').then((r) => r.json()).then((d) => setBookmarks(d.bookmarks || [])).catch(() => {});
   const bookmarkSet = useMemo(() => new Set(bookmarks.map((b) => `${b.platform}:${b.courseKey}`)), [bookmarks]);
   const isBookmarked = (platform, courseKey) => bookmarkSet.has(`${platform}:${courseKey}`);
   const toggleBookmark = (platform, courseKey, title) => {
+    if (mode.readOnly) { window.alert('The watchlist can be changed on the office dashboard only — this online copy is read-only.'); return; }
     const method = isBookmarked(platform, courseKey) ? 'DELETE' : 'POST';
     fetch('/api/bookmarks', { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ platform, courseKey, title }) })
       .then(loadBookmarks).catch(() => {});
@@ -79,6 +85,7 @@ export default function AppV2() {
     fetch('/api/connection').then((r) => r.json()).then(setConn).catch(() => {});
     fetch('/api/last-update').then((r) => r.json()).then((d) => { setLastUpdate(d.updatedAt); setLastRun(d.lastRun || null); }).catch(() => {});
     fetch('/api/freshness').then((r) => r.json()).then(setFreshness).catch(() => {});
+    fetch('/api/session-status').then((r) => r.json()).then(setSessions).catch(() => {});
     loadBookmarks();
     fetch('/api/coursera/metrics').then((r) => r.json()).then((d) => {
       setCoursera(d.courses || d.results || []);
@@ -105,7 +112,7 @@ export default function AppV2() {
   const staleList = Object.entries(freshness || {}).filter(([, v]) => v.oldest && v.oldest.ageDays > STALE_DAYS);
   const staleCount = staleList.length;
   if (!raw) return <div className="dcx"><div className="center-note">Loading your dashboard…</div></div>;
-  const go = (v) => { setView(v); setSideOpen(false); };
+  const go = (v) => { if (v === 'settings' && mode.readOnly) return; setView(v); setSideOpen(false); };
 
   return (
     <div className={'dcx' + (dark ? ' dark' : '')}>
@@ -118,10 +125,12 @@ export default function AppV2() {
               <div key={k} className={'nav-item' + (view === k ? ' active' : '') + (platform === 'coursera' ? ' p-coursera' : '')} onClick={() => go(k)}>{ICONS[k]}<span>{l}</span></div>
             ))}
           </div>
-          <div className="nav-section">
-            <div className="nav-label">Tools</div>
-            <div className={'nav-item' + (view === 'settings' ? ' active' : '')} onClick={() => go('settings')}>{ICONS.settings}<span>Settings</span></div>
-          </div>
+          {!mode.readOnly && (
+            <div className="nav-section">
+              <div className="nav-label">Tools</div>
+              <div className={'nav-item' + (view === 'settings' ? ' active' : '')} onClick={() => go('settings')}>{ICONS.settings}<span>Settings</span></div>
+            </div>
+          )}
           <div className="side-foot">
             {/* "Last updated 3h ago" used to be the NEWEST table anywhere, which is
                 how every Udemy figure sat 34 days old under a sidebar calling the
@@ -145,6 +154,9 @@ export default function AppV2() {
 
         <main className="main-content">
           <button className="btn btn-secondary menu-btn" style={{ marginBottom: 16 }} onClick={() => setSideOpen((o) => !o)}>☰ Menu</button>
+          {mode.readOnly
+            ? <div className="banner readonly-note">Online copy · read-only · data as of {mode.dataAsOf ? new Date(mode.dataAsOf).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}. Updates arrive from the office Mac after each daily run; connecting platforms and running tools happen there.</div>
+            : <LoginBanner sessions={sessions} setSessions={setSessions} onSettings={() => setView('settings')} />}
           {view !== 'settings' && <StaleBanner freshness={freshness} platform={platform} />}
           <div className="platform-tabs">
             {[['all', 'All Platforms'], ['udemy', 'Udemy'], ['coursera', 'Coursera'], ['coursera_cin', 'Coursera CIN'], ['coursera_dummies', 'Courses for Dummies'], ['futurelearn', 'FutureLearn'], ['linkedin', 'LinkedIn'], ['go1', 'Go1']].map(([k, l]) => (
@@ -1556,6 +1568,7 @@ function Coupons({ udemy }) {
             <option value="used">Used up only ({usedUp.length})</option>
           </select>
           <span className="muted">{shown.length} coupon{shown.length === 1 ? '' : 's'}</span>
+          <span style={{ marginLeft: 'auto' }}><CouponCsvBuilder /></span>
         </div>
         <div className="table-scroll"><table>
           <thead><tr><th className="no-sort">Course</th><th className="no-sort">Code</th><th className="no-sort">Status</th><th className="no-sort">Type</th><th className="no-sort">Used / Max</th><th className="no-sort">Remaining</th><th className="no-sort">Expires</th><th className="no-sort">Link</th></tr></thead>
@@ -1709,6 +1722,30 @@ function Settings({ conn, dark, setDark, lastUpdate, lastRun, onRefresh }) {
 const STALE_DAYS = 2;
 const PLATFORM_NAMES = { udemy: 'Udemy', coursera: 'Coursera', coursera_cin: 'Coursera CIN', coursera_dummies: 'Courses for Dummies', futurelearn: 'FutureLearn', linkedin: 'LinkedIn', go1: 'Go1' };
 const fmtDay = (iso) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+// A saved login that has expired (checkSessions.js, run first every night).
+// Shown on every page until the platform is reconnected: an expired login
+// otherwise fails quietly and the figures go stale for days unnoticed.
+function LoginBanner({ sessions, setSessions, onSettings }) {
+  const [checking, setChecking] = useState(false);
+  const expired = Object.values(sessions?.platforms || {}).filter((p) => p.status === 'expired');
+  if (!expired.length) return null;
+  const check = () => {
+    setChecking(true);
+    fetch('/api/session-status/check', { method: 'POST' }).then((r) => r.json()).then(setSessions).catch(() => {}).finally(() => setChecking(false));
+  };
+  return (
+    <div className="banner err" role="alert" style={{ marginBottom: 16, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', background: '#fde8e8', borderColor: '#dc2626', color: '#991b1b' }}>
+      <span style={{ flex: 1, minWidth: 260 }}>
+        🔒 <b>Login expired: {expired.map((p) => p.label).join(', ')}</b>
+        {' '}— {expired.map((p) => `${p.label} since ${fmtDay(p.expiredSince || p.checkedAt)}`).join(', ')}.
+        {' '}These platforms' figures stop updating until they are reconnected.
+      </span>
+      <button className="btn btn-secondary" onClick={onSettings}>Reconnect in Settings</button>
+      <button className="btn btn-secondary" onClick={check} disabled={checking}>{checking ? 'Checking… (about a minute)' : 'Check again'}</button>
+    </div>
+  );
+}
+
 function StaleBanner({ freshness, platform }) {
   if (!freshness) return null;
   const keys = platform === 'all' ? Object.keys(PLATFORM_NAMES) : [platform];

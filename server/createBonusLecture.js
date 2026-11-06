@@ -11,7 +11,7 @@
 // this only ever ADDS, and never to a course that already has one.
 //
 // Input: JSON array of { slug, courseId, cluster, lang? }
-// Run:  node createBonusLecture.js <jobs.json> [--dry-run]
+// Run:  node createBonusLecture.js <jobs.json> [--titles <slug-titles.json>] [--dry-run]
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -24,8 +24,12 @@ const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const DRY = process.argv.includes('--dry-run');
 const src = process.argv[2];
-if (!src || !existsSync(src)) { console.error('Usage: node createBonusLecture.js <jobs.json> [--dry-run]'); process.exit(1); }
+if (!src || !existsSync(src)) { console.error('Usage: node createBonusLecture.js <jobs.json> [--titles <slug-titles.json>] [--dry-run]'); process.exit(1); }
 const jobs = JSON.parse(readFileSync(src, 'utf8'));
+// --titles <file>: live Udemy titles keyed by slug, so the recommended courses
+// are labelled with the titles learners see now rather than the stored ones.
+const tIdx = process.argv.indexOf('--titles');
+const titlesBySlug = tIdx > 0 ? JSON.parse(readFileSync(process.argv[tIdx + 1], 'utf8')) : undefined;
 
 const TITLE = 'Bonus Lecture: Your Next Steps';
 const results = [];
@@ -42,7 +46,7 @@ for (let i = 0; i < jobs.length; i++) {
   const tag = `${i + 1}/${jobs.length}`;
   const rec = { slug: j.slug, courseId: j.courseId, cluster: j.cluster, stage: null };
   try {
-    const body = buildBonusBody(j.title || j.slug, j.cluster, j.lang || 'en');
+    const body = buildBonusBody(j.title || j.slug, j.cluster, j.lang || 'en', { titlesBySlug });
     rec.bodyChars = body.length;
 
     await page.goto(`https://www.udemy.com/instructor/course/${j.courseId}/manage/curriculum/`, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
@@ -88,8 +92,14 @@ for (let i = 0; i < jobs.length; i++) {
       // that students can actually see it.
       const v = await J('GET', `/api-2.0/users/me/taught-courses/${cid}/lectures/${lid}/?fields[lecture]=id,title,is_published,asset&fields[asset]=asset_type,body`);
       const live = v.json?.asset?.body || '';
-      const sub = await J('GET', `/api-2.0/courses/${cid}/subscriber-curriculum-items/?page_size=200&fields[lecture]=id`);
-      const visible = (sub.json?.results || []).some((x) => x._class === 'lecture' && x.id === lid);
+      // Paged: a new lecture goes last, and a course with more than one page of
+      // items (Paid Advertising has 293) put it past a single-page check.
+      let visible = false;
+      for (let u = `/api-2.0/courses/${cid}/subscriber-curriculum-items/?page_size=200&fields[lecture]=id`; u && !visible;) {
+        const sub = await J('GET', u);
+        visible = (sub.json?.results || []).some((x) => x._class === 'lecture' && x.id === lid);
+        u = sub.json?.next ? sub.json.next.replace('https://www.udemy.com', '') : null;
+      }
       return { stage: 'done', lectureId: lid, assetId: as.json.id,
                matches: live === html, hasCode: live.includes('SEPT_BESTPRICE'),
                liveChars: live.length, isPublished: v.json?.is_published === true, visible };

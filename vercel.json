@@ -1,0 +1,16 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "npm install --prefix client && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --prefix server",
+  "buildCommand": "npm run build --prefix client",
+  "outputDirectory": "public",
+  "regions": ["bom1"],
+  "functions": {
+    "api/index.js": {
+      "maxDuration": 60,
+      "memory": 1024,
+      "includeFiles": "client/dist/**"
+    }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+}

@@ -66,8 +66,11 @@ export const CLUSTERS = {
 // Udemy coupon and it expires. BESTPRICE lapsed on 2026-09-05 and sat dead in
 // ~140 live lectures for two days before anyone noticed — when this one nears
 // its date, update the constant and re-run applyBonusDiscountBlock.js.
-// SEPT_BESTPRICE runs to 2026-10-08 (verified live on 2026-09-07).
-export const DISCOUNT_CODE = 'SEPT_BESTPRICE';
+// SEPT_BESTPRICE ran to 2026-10-08. OCT_BESTPRICE is a best_price coupon (the
+// course's lowest price, $9.99 on most) on all 153 live courses from
+// 2026-10-06 12:00 UTC — and best_price coupons last FIVE days, not 31 like a
+// custom_price one, so it ends 2026-10-11 12:00 UTC (verified live 2026-10-06).
+export const DISCOUNT_CODE = 'OCT_BESTPRICE';
 
 const JB_SIGNUP = 'https://app.journeybuilder.ai/signup?utm_source=Udemy+Bonus+Section&amp;utm_medium=Udemy_Bonus_section_JBsignup_17%2F02%2F2026&amp;utm_campaign=Udemy_Bonus_section_17%2F02%2F2026_JBsignup_campaign';
 const JB_HOME = 'https://www.journeybuilder.ai/?utm_source=Udemy+Bonus+Section&amp;utm_medium=Udemy_Bonus_section_JB_17%2F02%2F2026&amp;utm_campaign=Udemy_Bonus_section_17%2F02%2F2026_JB_campaign';

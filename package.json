@@ -2,10 +2,11 @@
   "name": "distribution-dashboard",
   "private": true,
   "version": "1.0.0",
-  "description": "Udemy instructor dashboard — Express API + React (Vite) frontend",
+  "description": "Udemy instructor dashboard \u2014 Express API + React (Vite) frontend",
   "scripts": {
     "build": "npm install --prefix client && npm run build --prefix client && npm install --prefix server",
     "start": "node server/index.js",
     "scrape": "npm run scrape:enrollment --prefix server"
-  }
+  },
+  "type": "module"
 }

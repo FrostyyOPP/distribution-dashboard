@@ -70,7 +70,8 @@ mkdirSync(join(__dirname, 'bonus-lecture-backups'), { recursive: true });
 const results = []; const backups = [];
 const save = () => {
   writeFileSync('/tmp/discount_block_results.json', JSON.stringify(results, null, 2));
-  if (backups.length) writeFileSync(join(__dirname, 'bonus-lecture-backups', 'bodies_before_discount_block.json'), JSON.stringify(backups, null, 2));
+  // Dated per code, so a later run never overwrites the bodies an earlier one saved.
+  if (backups.length) writeFileSync(join(__dirname, 'bonus-lecture-backups', `bodies_before_${DISCOUNT_CODE}_${new Date().toISOString().slice(0, 10)}.json`), JSON.stringify(backups, null, 2));
 };
 
 for (let i = 0; i < courses.length; i++) {
@@ -89,8 +90,16 @@ for (let i = 0; i < courses.length; i++) {
         const res = await fetch(`https://www.udemy.com${u}`, o); const t = await res.text(); let j = null; try { j = JSON.parse(t); } catch {}
         return { status: res.status, json: j, text: t.slice(0, 200) }; };
 
-      const cu = await J('GET', `/api-2.0/courses/${cid}/instructor-curriculum-items/?page_size=500&fields[lecture]=title&fields[chapter]=title`);
-      const bonus = (cu.json?.results || []).find((x) => x._class === 'lecture' && /bonus/i.test(x.title || ''));
+      // Paged: the bonus lecture is the LAST item, and two courses have more than
+      // 500 (Paid Advertising Across 11 Platforms 528, Full AI Toolkit 566), so a
+      // single 500-item page reported them as having no bonus lecture.
+      const items = [];
+      for (let u = `/api-2.0/courses/${cid}/instructor-curriculum-items/?page_size=200&fields[lecture]=title&fields[chapter]=title`; u;) {
+        const cu = await J('GET', u);
+        items.push(...(cu.json?.results || []));
+        u = cu.json?.next ? cu.json.next.replace('https://www.udemy.com', '') : null;
+      }
+      const bonus = items.find((x) => x._class === 'lecture' && /bonus/i.test(x.title || ''));
       if (!bonus) return { stage: 'no-bonus' };
       const lec = await J('GET', `/api-2.0/users/me/subscribed-courses/${cid}/lectures/${bonus.id}/?fields[lecture]=asset&fields[asset]=asset_type,body`);
       if (lec.json?.asset?.asset_type !== 'Article') return { stage: 'not-article', assetType: lec.json?.asset?.asset_type };

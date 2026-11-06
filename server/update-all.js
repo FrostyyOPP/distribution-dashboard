@@ -7,7 +7,7 @@
 import 'dotenv/config';
 import { spawn } from 'node:child_process';
 import { lookup } from 'node:dns/promises';
-import { writeFileSync, existsSync } from 'node:fs';
+import { writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,6 +26,10 @@ const STEPS = [
   // them.
   ['Udemy minutes watched', 'scrapeEngagement.js', 'udemy'],
   ['Udemy enrollment', 'scrapeEnrollment.js', 'udemy', ['--force']],
+  // Every review (stars + date) and today's rating / students / UFB per course,
+  // kept as history — Udemy ratings were never stored before 2026-10-26. Uses
+  // the API key, not the browser login, so it runs even if that has expired.
+  ['Udemy ratings + reviews', 'syncUdemyReviews.js', 'udemy-api'],
   ['Coursera metrics', 'scrapeCourseraMetrics.js', 'coursera'],
   // Looker's course_comparison tile under-reports: on 2026-08-05 it returned
   // 5,453 enrollments for a course whose real total was 36,401, and the same
@@ -43,6 +47,10 @@ const STEPS = [
   ['Coursera instructors', 'scrapeCourseraInstructors.js', 'coursera', [], { everyDays: 7, table: 'coursera_course_instructors' }],
   ['Coursera instructor profiles', 'scrapeCourseraInstructorProfiles.js', 'coursera', [], { everyDays: 7, table: 'coursera_instructor_profiles' }],
   ['Coursera course items', 'scrapeCourseraCourseItems.js', 'coursera', [], { everyDays: 7, table: 'coursera_course_items' }],
+  // Completion rate from each course's own analytics page (all three catalogues).
+  // ~10 s a course, so each day reads the 90 stalest (~15 min): every course is
+  // re-read about once a week without one morning taking 1.5 hours.
+  ['Coursera completion rate (per course)', 'scrapeCourseraCompletion.js', 'coursera', ['--max=90']],
   // The other three platforms, each skipped on its own if its session is
   // missing. Until 2026-09-24 none of them ran on a schedule at all: Go1 was 72
   // days old, FutureLearn 10 and LinkedIn 9, with nothing on screen saying so.
@@ -112,7 +120,40 @@ async function waitForNetwork(maxMinutes = 15) {
   }
 }
 if (!PLAN) await waitForNetwork();
+
+// THE BROWSER FIRST. ~/Library/Caches/ms-playwright vanishes on this Mac (2026-08-21,
+// and again before the 2026-10-30 run, which then failed 18 of 23 steps in 90s each).
+// Every scraper needs it, so if it is missing, reinstall it before anything runs.
+if (!PLAN) {
+  try {
+    const { chromium } = await import('playwright');
+    if (!existsSync(chromium.executablePath())) {
+      console.log('\n▶ Playwright browser missing — reinstalling it…');
+      await new Promise((resolve) => {
+        const p = spawn(process.execPath, [join(__dirname, 'node_modules/playwright/cli.js'), 'install', 'chromium'], { cwd: __dirname, stdio: 'inherit' });
+        p.on('close', resolve); p.on('error', resolve);
+      });
+      console.log(existsSync(chromium.executablePath()) ? '✅ browser reinstalled' : '❌ browser still missing — scrapers will fail');
+    }
+  } catch (e) { console.log(`⚠️  browser check failed: ${e.message}`); }
+}
 const results = [];
+
+// CHECK THE LOGINS FIRST (checkSessions.js). An expired login used to fail
+// every step of its platform, twice, for days — Udemy and Go1 on 2026-10-20 →
+// 22 — and on 2026-10-13 a dead Coursera session held the run up for hours.
+// Now an expired platform raises a notification straight away, its steps are
+// skipped with the reason, and the dashboard shows a banner until it is
+// reconnected. "unknown" (a page that did not load) is not treated as expired.
+let expiredPlatforms = new Set();
+if (!PLAN) {
+  console.log('\n▶ Checking the saved logins…');
+  await run('checkSessions.js', []);
+  try {
+    const st = JSON.parse(readFileSync(join(__dirname, 'session-status.json'), 'utf8'));
+    for (const [id, v] of Object.entries(st.platforms || {})) if (v.status === 'expired') expiredPlatforms.add(id);
+  } catch { /* no status — run everything as before */ }
+}
 // A step marked { everyDays, table } runs only once that table is older than
 // everyDays. Read from the table itself, so a manual run resets the clock too.
 async function ageInDays(table) {
@@ -130,6 +171,7 @@ for (const [name, file, platform, args, opts] of STEPS) {
     results.push({ name, skipped: UDEMY_DISABLED ? 'udemy scraping disabled' : 'not connected' });
     continue;
   }
+  if (expiredPlatforms.has(platform)) { results.push({ name, skipped: `login expired — reconnect ${platform} in Settings` }); continue; }
   if (opts?.everyDays) {
     const age = await ageInDays(opts.table);
     if (age < opts.everyDays) {
@@ -169,15 +211,39 @@ if (PLAN) {
 // month-over-month comparison possible. Upserts per month, so daily is fine.
 try {
   const { snapshotCourseraRatings } = await import('./db.js');
-  const snap = snapshotCourseraRatings({ catalogs: ['starweaver'] });
-  console.log(`\n📸 Starweaver rating snapshot ${snap.month}: ${snap.written} course rows`);
+  // Month to date, all three catalogs. The month's final figures are saved on
+  // the 4th of the next month by snapshotCourseraMonthly.js.
+  const snap = snapshotCourseraRatings({ catalogs: ['starweaver', 'cin', 'dummies'] });
+  console.log(`\n📸 Coursera rating snapshot ${snap.month} (Starweaver, CIN, Dummies): ${snap.written} course rows`);
   results.push({ name: 'Coursera rating snapshot', ok: true, secs: 0 });
 } catch (e) {
   console.log(`\n⚠️  rating snapshot failed: ${e.message}`);
   results.push({ name: 'Coursera rating snapshot', ok: false, secs: 0 });
 }
 
+// LAST: back up the whole database, and copy everything to the cloud (Supabase,
+// cloud.js). The backup goes to private cloud storage and is then deleted here
+// (30 days + one per month kept); every table is mirrored into the cloud
+// Postgres. After the snapshots above, so both hold today's figures.
+for (const [name, file] of [['Database backup', 'backupDb.js'], ['Cloud database sync', 'syncCloud.js']]) {
+  if (file === 'syncCloud.js' && !process.env.SUPABASE_DB_URL) { results.push({ name, skipped: 'cloud database not set up (.env)' }); continue; }
+  console.log(`\n▶ ${name}…`);
+  const t = Date.now();
+  const code = await run(file, []);
+  results.push({ name, ok: code === 0, secs: Math.round((Date.now() - t) / 1000) });
+}
+
 writeFileSync(join(__dirname, 'last-update.json'), JSON.stringify({ finishedAt: new Date().toISOString(), results }, null, 2));
+
+// The online (Vercel) copy of the dashboard reads what this publishes — after
+// last-update.json, so the online copy shows this run's results too.
+if (process.env.SUPABASE_URL && process.env.SUPABASE_SECRET_KEY) {
+  console.log('\n▶ Online dashboard data…');
+  const t = Date.now();
+  const code = await run('publishCloud.js', []);
+  results.push({ name: 'Online dashboard data', ok: code === 0, secs: Math.round((Date.now() - t) / 1000) });
+  writeFileSync(join(__dirname, 'last-update.json'), JSON.stringify({ finishedAt: new Date().toISOString(), results }, null, 2));
+}
 
 console.log('\n=== Summary ===');
 for (const r of results) {
