@@ -69,6 +69,13 @@ export default function AppV2() {
   // The online (Vercel) copy is read-only: no Settings/connect, no watchlist edits.
   const [mode, setMode] = useState({ readOnly: false, dataAsOf: null });
   useEffect(() => { fetch('/api/mode').then((r) => r.json()).then(setMode).catch(() => {}); }, []);
+  useEffect(() => {
+    if (!mode.readOnly) return;
+    const failed = ((lastRun && lastRun.results) || []).filter((r) => r.ok === false).map((r) => r.name);
+    if (failed.length) console.warn(`[dashboard] last update: ${failed.length} step(s) failed —`, failed.join(', '));
+    const stale = Object.entries(freshness || {}).filter(([, v]) => v.oldest && v.oldest.ageDays > STALE_DAYS);
+    if (stale.length) console.warn('[dashboard] data older than', STALE_DAYS, 'days:', Object.fromEntries(stale.map(([k, v]) => [k, `${v.oldest.ageDays} days`])));
+  }, [mode.readOnly, lastRun, freshness]);
 
   const loadBookmarks = () => fetch('/api/bookmarks').then((r) => r.json()).then((d) => setBookmarks(d.bookmarks || [])).catch(() => {});
   const bookmarkSet = useMemo(() => new Set(bookmarks.map((b) => `${b.platform}:${b.courseKey}`)), [bookmarks]);
@@ -111,6 +118,9 @@ export default function AppV2() {
   const runFailures = ((lastRun && lastRun.results) || []).filter((r) => r.ok === false);
   const staleList = Object.entries(freshness || {}).filter(([, v]) => v.oldest && v.oldest.ageDays > STALE_DAYS);
   const staleCount = staleList.length;
+  // The online copy is for the team, not for whoever runs the scrapers: failed
+  // steps and stale sources go to the browser console there, not on screen.
+  const adminNotes = !mode.readOnly;
   if (!raw) return <div className="dcx"><div className="center-note">Loading your dashboard…</div></div>;
   const go = (v) => { if (v === 'settings' && mode.readOnly) return; setView(v); setSideOpen(false); };
 
@@ -136,12 +146,12 @@ export default function AppV2() {
                 how every Udemy figure sat 34 days old under a sidebar calling the
                 data fresh. It now names what is fresh and counts what is not. */}
             Last update run {relTime(lastRun?.finishedAt || lastUpdate)}
-            {staleCount > 0 && (
+            {adminNotes && staleCount > 0 && (
               <div className="run-warn" onClick={() => go('settings')} title={staleList.map(([p, v]) => `${PLATFORM_NAMES[p]}: ${v.oldest.ageDays} days`).join('\n')}>
                 ⏳ {staleCount} platform{staleCount > 1 ? 's' : ''} with data over {STALE_DAYS} days old
               </div>
             )}
-            {runFailures.length > 0 && (
+            {adminNotes && runFailures.length > 0 && (
               /* A run where most steps failed used to look identical to a clean
                  one: the guards refused the bad writes, the timestamps stayed
                  old, and the sidebar just said "4h ago". Say it out loud. */
@@ -155,9 +165,9 @@ export default function AppV2() {
         <main className="main-content">
           <button className="btn btn-secondary menu-btn" style={{ marginBottom: 16 }} onClick={() => setSideOpen((o) => !o)}>☰ Menu</button>
           {mode.readOnly
-            ? <div className="banner readonly-note">Online copy · read-only · data as of {mode.dataAsOf ? new Date(mode.dataAsOf).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}. Updates arrive from the office Mac after each daily run; connecting platforms and running tools happen there.</div>
+            ? <div className="banner readonly-note">Data updated {mode.dataAsOf ? new Date(mode.dataAsOf).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—'}</div>
             : <LoginBanner sessions={sessions} setSessions={setSessions} onSettings={() => setView('settings')} />}
-          {view !== 'settings' && <StaleBanner freshness={freshness} platform={platform} />}
+          {adminNotes && view !== 'settings' && <StaleBanner freshness={freshness} platform={platform} />}
           <div className="platform-tabs">
             {[['all', 'All Platforms'], ['udemy', 'Udemy'], ['coursera', 'Coursera'], ['coursera_cin', 'Coursera CIN'], ['coursera_dummies', 'Courses for Dummies'], ['futurelearn', 'FutureLearn'], ['linkedin', 'LinkedIn'], ['go1', 'Go1']].map(([k, l]) => (
               <button key={k} className={'ptab' + (platform === k ? ' active' : '') + (k === 'coursera' || k === 'coursera_cin' || k === 'coursera_dummies' ? ' p-coursera' : '')} onClick={() => setPlatform(k)}>{l}</button>
