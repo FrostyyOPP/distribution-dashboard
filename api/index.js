@@ -61,7 +61,10 @@ export default async function handler(req, res) {
   catch (e) {
     res.statusCode = 503;
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    return res.end(`The online dashboard could not load its data (${e.message}). Try again in a minute.`);
+    // The cause names the network problem (DNS, TLS, refused…); no secrets in it.
+    const why = [e.message, e.cause?.code, e.cause?.message].filter(Boolean).join(' — ');
+    console.error('data load failed:', why);
+    return res.end(`The online dashboard could not load its data (${why}). Try again in a minute.`);
   }
   // The database is opened once per instance, so newer data means a fresh
   // instance: once a newer copy is published, this instance answers this request
