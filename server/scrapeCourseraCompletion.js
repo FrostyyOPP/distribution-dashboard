@@ -110,7 +110,8 @@ for (const [k, c] of todo.entries()) {
 await browser.close();
 
 if (!DRY) applyCourseLevelCompletion();
-const okRun = ok + empty + locked > 0 && failed <= Math.max(3, 0.2 * todo.length);
+// A run fails when many pages fail (a dead session), not when one stubborn page does.
+const okRun = failed <= Math.max(3, 0.2 * todo.length);
 if (!DRY) logScrapeRun({ job: 'coursera_course_completion', ok: okRun, rows: ok + empty + locked, startedAt, error: okRun ? null : `${failed} course page(s) failed` });
 console.log(`${okRun ? '✅' : '❌'} Completion rate from each course's analytics page: ${ok} read · ${empty} with no learners yet · ${locked} without analytics access · ${failed} failed`);
 process.exit(okRun ? 0 : 1);
