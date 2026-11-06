@@ -8,5 +8,8 @@
     "start": "node server/index.js",
     "scrape": "npm run scrape:enrollment --prefix server"
   },
-  "type": "module"
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  }
 }
