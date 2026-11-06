@@ -12,6 +12,7 @@
 // — the existing rows are left untouched and the attempt is logged to
 // `scrape_runs` as guarded, instead of silently succeeding.
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import DatabaseCtor from 'better-sqlite3';
@@ -249,6 +250,21 @@ db.exec(`
   -- Keyed on (catalog, course_name, month): re-running in the same month
   -- overwrites that month's row rather than adding a duplicate, so it is safe
   -- to run daily — the last run of a month is the one that stands.
+  -- A complete, dated copy of every Coursera table, taken on the 4th of each
+  -- month (snapshotCourseraMonthly.js). The live tables are REPLACED on every
+  -- scrape, so this is the only record of what they held. Keyed by the day it
+  -- was taken: a later snapshot never overwrites an earlier one.
+  CREATE TABLE IF NOT EXISTS coursera_monthly_archive (
+    snapshot_date TEXT NOT NULL,       -- 'YYYY-MM-DD', the day it was taken
+    month TEXT NOT NULL,               -- 'YYYY-MM', the month it closes
+    source_table TEXT NOT NULL,
+    row_count INTEGER NOT NULL,
+    source_updated_at TEXT,            -- newest timestamp in the table when copied
+    rows_gz BLOB NOT NULL,             -- gzip(JSON array of every row)
+    captured_at TEXT NOT NULL,
+    PRIMARY KEY (snapshot_date, source_table)
+  );
+
   CREATE TABLE IF NOT EXISTS coursera_rating_history (
     catalog TEXT NOT NULL,             -- 'starweaver' | 'cin'
     course_name TEXT NOT NULL,
@@ -360,6 +376,56 @@ db.exec(`
     ub_minutes REAL,
     non_ub_minutes REAL,
     updated_at TEXT NOT NULL
+  );
+
+  -- UDEMY RATINGS HISTORY (2026-10-26). Udemy ratings were only ever read live
+  -- from the API, so nothing recorded what a course's rating used to be and a
+  -- falling rating could not be seen. Two append-only tables fix that:
+  --   udemy_reviews       every review with its stars and date — rebuilds the
+  --                       month-by-month trend all the way back (2014 onwards)
+  --   udemy_course_daily  one row per course per day: Udemy's displayed rating,
+  --                       review count, students, UFB or not, revenue
+  -- Written by syncUdemyReviews.js in the nightly update. Rows are never deleted.
+  CREATE TABLE IF NOT EXISTS udemy_reviews (
+    review_id TEXT PRIMARY KEY,
+    course_id TEXT NOT NULL,
+    rating REAL,
+    content TEXT,
+    created TEXT,
+    user_modified TEXT,
+    first_seen TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS udemy_reviews_course ON udemy_reviews (course_id, created);
+
+  -- Completion rate from each Coursera course's own analytics page (Progress Funnel ›
+  -- Course Level Metrics), which the team quotes; it replaces the partner-side
+  -- completion_rate in the three Coursera tables (applyCourseLevelCompletion).
+  CREATE TABLE IF NOT EXISTS coursera_course_completion (
+    catalog TEXT NOT NULL,             -- 'starweaver' | 'cin' | 'dummies'
+    slug TEXT NOT NULL,
+    course_name TEXT,
+    enrolled INTEGER,                  -- "Course Enrollment Count" on that page
+    first_half INTEGER,
+    completed INTEGER,
+    completion_rate REAL,              -- 0..1; NULL = no learners in the funnel yet
+    captured_at TEXT NOT NULL,
+    PRIMARY KEY (catalog, slug)
+  );
+
+  CREATE TABLE IF NOT EXISTS udemy_course_daily (
+    date TEXT NOT NULL,                -- 'YYYY-MM-DD' (IST)
+    course_id TEXT NOT NULL,
+    title TEXT,
+    is_published INTEGER,
+    rating REAL,                       -- Udemy's displayed (weighted) rating
+    num_reviews INTEGER,
+    students INTEGER,
+    is_udemy_business INTEGER,
+    revenue REAL,
+    minutes_taught REAL,
+    captured_at TEXT NOT NULL,
+    PRIMARY KEY (date, course_id)
   );
 
   CREATE TABLE IF NOT EXISTS engagement_course_monthly (
@@ -1031,7 +1097,7 @@ const insertCourseraMetricStmt = db.prepare(
 );
 export function writeCourseraMetrics(courses) {
   const ts = nowIso();
-  return guardedReplaceAll(
+  const result = guardedReplaceAll(
     'coursera_metrics', courses,
     (c) => insertCourseraMetricStmt.run(
       c.name, c.domain ?? null, c.inSpecialization ? 1 : 0, c.launchDate ?? null,
@@ -1040,7 +1106,36 @@ export function writeCourseraMetrics(courses) {
     ),
     { job: 'coursera_metrics' }
   );
+  applyCourseLevelCompletion();
+  return result;
 }
+// --- Coursera completion rate per course (from each course's analytics page) ---
+export function writeCourseLevelCompletion(r) {
+  db.prepare(`INSERT INTO coursera_course_completion (catalog, slug, course_name, enrolled, first_half, completed, completion_rate, captured_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+              ON CONFLICT (catalog, slug) DO UPDATE SET course_name = excluded.course_name, enrolled = excluded.enrolled,
+                first_half = excluded.first_half, completed = excluded.completed, completion_rate = excluded.completion_rate,
+                captured_at = excluded.captured_at`)
+    .run(r.catalog, r.slug, r.name ?? null, r.enrolled ?? null, r.firstHalf ?? null, r.completed ?? null, r.rate ?? null, nowIso());
+}
+// Puts the course-page rate over the partner-side one. Called after the scraper and
+// after every rewrite of the three tables, so the daily scrapes never undo it.
+export function applyCourseLevelCompletion() {
+  db.exec(`
+    UPDATE coursera_metrics SET completion_rate = (
+      SELECT cc.completion_rate FROM coursera_course_completion cc JOIN coursera_course_status s ON s.slug = cc.slug
+      WHERE cc.catalog = 'starweaver' AND trim(s.course_name) = trim(coursera_metrics.course_name) AND cc.completion_rate IS NOT NULL LIMIT 1)
+    WHERE EXISTS (SELECT 1 FROM coursera_course_completion cc JOIN coursera_course_status s ON s.slug = cc.slug
+      WHERE cc.catalog = 'starweaver' AND trim(s.course_name) = trim(coursera_metrics.course_name) AND cc.completion_rate IS NOT NULL);
+    UPDATE coursera_cin_metrics SET completion_rate = (
+      SELECT completion_rate FROM coursera_course_completion cc WHERE cc.catalog = 'cin' AND cc.slug = coursera_cin_metrics.slug)
+    WHERE EXISTS (SELECT 1 FROM coursera_course_completion cc WHERE cc.catalog = 'cin' AND cc.slug = coursera_cin_metrics.slug AND cc.completion_rate IS NOT NULL);
+    UPDATE coursera_dummies_courses SET completion_rate = (
+      SELECT completion_rate FROM coursera_course_completion cc WHERE cc.catalog = 'dummies' AND cc.slug = coursera_dummies_courses.slug)
+    WHERE EXISTS (SELECT 1 FROM coursera_course_completion cc WHERE cc.catalog = 'dummies' AND cc.slug = coursera_dummies_courses.slug AND cc.completion_rate IS NOT NULL);
+  `);
+}
+
 export function readCourseraMetrics() {
   const rows = db.prepare('SELECT * FROM coursera_metrics').all();
   const scrapedAt = db.prepare('SELECT MAX(updated_at) AS t FROM coursera_metrics').get().t;
@@ -1410,7 +1505,7 @@ const insertCourseraCinMetricStmt = db.prepare(
 );
 export function writeCourseraCinMetrics(courses) {
   const ts = nowIso();
-  return guardedReplaceAll(
+  const result = guardedReplaceAll(
     'coursera_cin_metrics', courses,
     (c) => insertCourseraCinMetricStmt.run(
       c.slug, c.name, c.domain ?? null, c.inSpecialization ? 1 : 0, c.launchDate ?? null,
@@ -1419,6 +1514,8 @@ export function writeCourseraCinMetrics(courses) {
     ),
     { job: 'coursera_cin_metrics' }
   );
+  applyCourseLevelCompletion();
+  return result;
 }
 export function readCourseraCinMetrics() {
   const rows = db.prepare('SELECT * FROM coursera_cin_metrics').all()
@@ -1509,12 +1606,14 @@ const insertDummiesStmt = db.prepare(
 );
 export function writeCourseraDummiesCourses(courses) {
   const ts = nowIso();
-  return guardedReplaceAll(
+  const result = guardedReplaceAll(
     'coursera_dummies_courses', courses,
     (c) => insertDummiesStmt.run(c.slug, c.name, c.status ?? null, c.dateKind ?? null, c.date ?? null, c.domain ?? null,
       c.launchDate ?? null, c.enrollments ?? null, c.completions ?? null, c.completionRate ?? null, c.rating ?? null, ts),
     { job: 'coursera_dummies_courses' }
   );
+  applyCourseLevelCompletion();
+  return result;
 }
 export function readCourseraDummiesCourses() {
   const courses = db.prepare('SELECT * FROM coursera_dummies_courses ORDER BY name').all().map((r) => ({
@@ -1643,7 +1742,7 @@ const ALL_TABLES = [
   'coursera_cin_courses', 'coursera_cin_metrics', 'coursera_cin_overview_kpis', 'coursera_rating_history',
   'linkedin_courses', 'linkedin_revenue', 'revenue_master',
   'futurelearn_courses', 'coursera_dummies_courses', 'go1_catalog', 'go1_courses', 'go1_course_history', 'engagement_course', 'engagement_monthly', 'engagement_meta', 'engagement_ub_monthly',
-  'engagement_course_monthly',
+  'engagement_course_monthly', 'udemy_reviews', 'udemy_course_daily', 'coursera_course_completion',
 ];
 // Most scrape tables stamp `updated_at`; a few use a different column name.
 const TIMESTAMP_COLUMN_OVERRIDES = {
@@ -1651,6 +1750,8 @@ const TIMESTAMP_COLUMN_OVERRIDES = {
   coursera_revenue_import: 'imported_at',
   coursera_revenue_quarterly: 'imported_at',
   coursera_rating_history: 'captured_at',
+  udemy_course_daily: 'captured_at',
+  coursera_course_completion: 'captured_at',
 };
 export function latestUpdatedAt() {
   let newest = null;
@@ -1688,19 +1789,30 @@ const insertRatingHistoryStmt = db.prepare(
 // Defaults to the Starweaver catalogue only — that is the side being tracked
 // month to month. Pass catalogs explicitly to include CIN.
 export function snapshotCourseraRatings(opts = {}) {
-  const { month, catalogs = ['starweaver'] } = typeof opts === 'string' ? { month: opts } : opts;
+  const { month, catalogs = ['starweaver'], replaceMonth = false } = typeof opts === 'string' ? { month: opts } : opts;
   const ts = new Date().toISOString();
   const m = month || ts.slice(0, 7);
+  const COLS = 'course_name, rating, enrollments, paid_enrollments, completions, completion_rate';
   const sources = [
-    ['starweaver', 'coursera_metrics'],
-    ['cin', 'coursera_cin_metrics'],
+    ['starweaver', `SELECT ${COLS} FROM coursera_metrics`],
+    ['cin', `SELECT ${COLS} FROM coursera_cin_metrics`],
+    ['dummies', 'SELECT name AS course_name, rating, enrollments, NULL AS paid_enrollments, completions, completion_rate FROM coursera_dummies_courses'],
   ].filter(([c]) => catalogs.includes(c));
   let written = 0;
   const run = db.transaction(() => {
-    for (const [catalog, table] of sources) {
-      const rows = db.prepare(
-        `SELECT course_name, rating, enrollments, paid_enrollments, completions, completion_rate FROM ${table}`
-      ).all();
+    for (const [catalog, sql] of sources) {
+      // Rows are keyed on course name, and two courses can share one — CIN has
+      // "GenAI for Learning and Development" launched (2,405 learners) and as an
+      // empty draft. Written smallest first, so the real course is the one kept.
+      const rows = db.prepare(`${sql} ORDER BY COALESCE(enrollments, -1)`).all();
+      // A month's CLOSING snapshot replaces whatever the daily runs left for it.
+      // The daily upsert is keyed on course name, so every name Coursera showed
+      // during the month stays behind as its own row — September 2026 ended with
+      // 239 rows for 171 courses. Only replaced when there is something to put
+      // back, so an empty scrape cannot wipe a month.
+      if (replaceMonth && rows.length) {
+        db.prepare('DELETE FROM coursera_rating_history WHERE catalog = ? AND month = ?').run(catalog, m);
+      }
       for (const r of rows) {
         insertRatingHistoryStmt.run(catalog, r.course_name, m, r.rating, r.enrollments,
           r.paid_enrollments, r.completions, r.completion_rate, ts);
@@ -1710,6 +1822,102 @@ export function snapshotCourseraRatings(opts = {}) {
   });
   run();
   return { month: m, written };
+}
+
+// ---- Udemy ratings history -----------------------------------------------------
+// Reviews are upserted by id: a review the student later edits keeps its first
+// date but takes the new stars. Nothing is ever deleted, so a review Udemy later
+// removes stays on record.
+const upsertUdemyReviewStmt = db.prepare(
+  `INSERT INTO udemy_reviews (review_id, course_id, rating, content, created, user_modified, first_seen, updated_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(review_id) DO UPDATE SET rating = excluded.rating, content = excluded.content,
+     user_modified = excluded.user_modified, updated_at = excluded.updated_at`
+);
+export function writeUdemyReviews(rows) {
+  const ts = nowIso();
+  const before = db.prepare('SELECT COUNT(*) AS n FROM udemy_reviews').get().n;
+  db.transaction(() => {
+    for (const r of rows) upsertUdemyReviewStmt.run(r.id, r.courseId, r.rating, r.content || null, r.created, r.userModified || null, ts, ts);
+  })();
+  return { written: rows.length, added: db.prepare('SELECT COUNT(*) AS n FROM udemy_reviews').get().n - before };
+}
+
+// One row per course for the day; a second run the same day replaces that day's
+// row, so the table holds exactly one reading per course per day.
+const upsertUdemyDailyStmt = db.prepare(
+  `INSERT INTO udemy_course_daily (date, course_id, title, is_published, rating, num_reviews, students, is_udemy_business, revenue, minutes_taught, captured_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   ON CONFLICT(date, course_id) DO UPDATE SET title = excluded.title, is_published = excluded.is_published,
+     rating = excluded.rating, num_reviews = excluded.num_reviews, students = excluded.students,
+     is_udemy_business = excluded.is_udemy_business, revenue = excluded.revenue,
+     minutes_taught = excluded.minutes_taught, captured_at = excluded.captured_at`
+);
+export function snapshotUdemyCourses(courses, date) {
+  const ts = nowIso();
+  const students = Object.fromEntries(db.prepare('SELECT course_id, count FROM enrollment').all().map((r) => [r.course_id, r.count]));
+  const revenue = Object.fromEntries(db.prepare('SELECT course_id, amount FROM revenue_course').all().map((r) => [r.course_id, r.amount]));
+  const eng = Object.fromEntries(db.prepare('SELECT course_id, minutes_taught, is_udemy_business FROM engagement_course').all().map((r) => [r.course_id, r]));
+  db.transaction(() => {
+    for (const c of courses) {
+      const e = eng[c.id];
+      upsertUdemyDailyStmt.run(date, c.id, c.title, c.is_published ? 1 : 0, c.num_reviews ? c.rating : null, c.num_reviews ?? null,
+        students[c.id] ?? null, e ? (e.is_udemy_business ? 1 : 0) : null, revenue[c.id] ?? null, e?.minutes_taught ?? null, ts);
+    }
+  })();
+  return { date, written: courses.length };
+}
+
+// ---- Coursera monthly archive ------------------------------------------------
+// Every coursera_* table in the database, except the two that are already
+// history. Read from the schema rather than ALL_TABLES, which does not list
+// every table (coursera_instructor_check is missing from it), so a new
+// Coursera table is archived the day it appears.
+export const COURSERA_ARCHIVE_TABLES = () => db.prepare(
+  `SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'coursera\\_%' ESCAPE '\\'
+     AND name NOT IN ('coursera_rating_history', 'coursera_monthly_archive') ORDER BY name`
+).all().map((r) => r.name);
+
+export function archiveCourseraTables({ month, date } = {}) {
+  const ts = new Date().toISOString();
+  const day = date || ts.slice(0, 10);
+  const m = month || day.slice(0, 7);
+  const ins = db.prepare(
+    `INSERT INTO coursera_monthly_archive (snapshot_date, month, source_table, row_count, source_updated_at, rows_gz, captured_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(snapshot_date, source_table) DO UPDATE SET month = excluded.month, row_count = excluded.row_count,
+       source_updated_at = excluded.source_updated_at, rows_gz = excluded.rows_gz, captured_at = excluded.captured_at`
+  );
+  const tables = [];
+  db.transaction(() => {
+    for (const t of COURSERA_ARCHIVE_TABLES()) {
+      const rows = db.prepare(`SELECT * FROM ${t}`).all();
+      const col = TIMESTAMP_COLUMN_OVERRIDES[t] || 'updated_at';
+      let newest = null;
+      try { newest = db.prepare(`SELECT MAX(${col}) AS t FROM ${t}`).get().t; } catch {}
+      const gz = gzipSync(JSON.stringify(rows));
+      ins.run(day, m, t, rows.length, newest, gz, ts);
+      tables.push({ table: t, rows: rows.length, newest, bytes: gz.length });
+    }
+  })();
+  return { snapshotDate: day, month: m, tables };
+}
+
+// What the archive holds: one line per snapshot day and table.
+export function listCourseraArchive() {
+  return db.prepare(
+    `SELECT snapshot_date, month, source_table, row_count, source_updated_at, length(rows_gz) AS bytes, captured_at
+       FROM coursera_monthly_archive ORDER BY snapshot_date, source_table`
+  ).all();
+}
+
+// The rows of one archived table: by snapshot day ('YYYY-MM-DD'), or by month
+// ('YYYY-MM'), which returns that month's latest snapshot.
+export function readCourseraArchive(when, table) {
+  const row = /^\d{4}-\d{2}$/.test(when)
+    ? db.prepare('SELECT rows_gz, snapshot_date FROM coursera_monthly_archive WHERE month = ? AND source_table = ? ORDER BY snapshot_date DESC LIMIT 1').get(when, table)
+    : db.prepare('SELECT rows_gz, snapshot_date FROM coursera_monthly_archive WHERE snapshot_date = ? AND source_table = ?').get(when, table);
+  return row ? { snapshotDate: row.snapshot_date, rows: JSON.parse(gunzipSync(row.rows_gz).toString('utf8')) } : null;
 }
 
 // Rating for each course in two given months, side by side.
@@ -1875,7 +2083,7 @@ export function readFreshness() {
 // a platform by its OLDEST one — one fresh table cannot vouch for a stale one.
 const PLATFORM_SOURCES = {
   udemy: [['revenue_course', 'Revenue'], ['enrollment', 'Enrollments'], ['engagement_course', 'Minutes watched'],
-          ['captions', 'Captions'], ['coupons', 'Coupons']],
+          ['captions', 'Captions'], ['coupons', 'Coupons'], ['udemy_course_daily', 'Ratings']],
   coursera: [['coursera_metrics', 'Enrollments & ratings'], ['coursera_course_status', 'Status & reviews']],
   coursera_cin: [['coursera_cin_metrics', 'Enrollments & ratings'], ['coursera_cin_courses', 'Course list']],
   coursera_dummies: [['coursera_dummies_courses', 'Courses & enrollments']],

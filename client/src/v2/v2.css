@@ -264,3 +264,7 @@
   border-top: 1px solid var(--border, #e5e7eb); }
 .filter-chip { background: #eef2ff; color: #4f46e5; }
 .filter-chip-x { cursor: pointer; margin-left: 8px; font-weight: 700; }
+
+/* The online (Vercel) copy: a quiet note that it is read-only and how fresh it is. */
+.dcx .banner.readonly-note { background: rgba(0, 102, 204, 0.07); border-color: rgba(0, 102, 204, 0.25); color: #1d4f91; }
+.dcx.dark .banner.readonly-note { background: rgba(96, 165, 250, 0.10); border-color: rgba(96, 165, 250, 0.3); color: #bfdbfe; }

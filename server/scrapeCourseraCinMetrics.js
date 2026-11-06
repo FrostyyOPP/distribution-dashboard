@@ -78,14 +78,21 @@ function parseText(text) {
 // Poll instead of a fixed sleep — the enrollment count renders async, and a
 // fixed wait proved unreliable across hundreds of sequential navigations in
 // one long-running browser session (11% hit rate before this fix).
+//
+// A 0 is not an answer yet. The overview shows "Current Enrollments 0" while the
+// real count loads, and taking the first number read stored 0 for courses with
+// thousands of learners (Microsoft Excel VBA and Macros: 28,553 → 0 on
+// 2026-10-01, alongside ratings that prove it has learners). So a 0 is only
+// kept if it is still 0 when the wait runs out — true for unused courses.
 async function scrapeEnrollment(slug, timeoutMs = 8000) {
   await page.goto(`https://www.coursera.org/teach/${slug}/course/overview`, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
   const start = Date.now();
   let result = { enrollments: null, launchDate: null };
   while (Date.now() - start < timeoutMs) {
     const text = await page.evaluate(() => document.body.innerText).catch(() => '');
-    result = parseText(text);
-    if (result.enrollments != null) return result;
+    const r = parseText(text);
+    if (r.enrollments != null || r.launchDate) result = r;
+    if (result.enrollments) return result;
     await sleep(500);
   }
   return result;
@@ -128,6 +135,18 @@ async function fetchDomainRatingStatusReviews(slug) {
   }, { slug, domainNames: DOMAIN_NAMES });
 }
 
+// Check the login on ONE page before visiting 325. With an expired session every
+// page times out instead, and on 2026-10-13 that took 6.4 hours to fail — holding
+// up every step after it in the nightly run.
+await page.goto(`https://www.coursera.org/teach/${courseList[0].slug}/course/overview`, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+await sleep(6000);
+const signedIn = await page.evaluate(async () => (await fetch('/api/programMemberships.v2?q=byUser&userId=130949192', { credentials: 'include' })).status !== 403).catch(() => false);
+if (!/\/teach\//.test(page.url()) || !signedIn) {
+  console.error(`❌ Coursera login has expired (landed on ${page.url().slice(0, 60)}). Reconnect Coursera in the dashboard, then re-run. Nothing written.`);
+  await browser.close();
+  process.exit(1);
+}
+
 console.log(`Visiting ${courseList.length} Coursera CIN course pages…`);
 const results = [];
 const allReviews = [];
@@ -144,6 +163,21 @@ for (let i = 0; i < courseList.length; i++) {
   await sleep(300);
 }
 process.stdout.write('\n');
+
+// Second pass for every course that came back blank or 0, with a longer wait.
+// Over 325 sequential pages a few always load slowly; one retry recovers them
+// instead of storing a gap for a month.
+const retry = results.filter((r) => !r.enrollments);
+if (retry.length) {
+  let fixed = 0;
+  for (const r of retry) {
+    const again = await scrapeEnrollment(r.slug, 20000);
+    if (again.enrollments != null && (r.enrollments == null || again.enrollments > r.enrollments)) { r.enrollments = again.enrollments; fixed++; }
+    if (!r.launchDate && again.launchDate) r.launchDate = again.launchDate;
+    await sleep(300);
+  }
+  console.log(`  retried ${retry.length} course(s) with no enrollment figure — ${fixed} recovered, ${retry.length - fixed} still blank or 0`);
+}
 await browser.close();
 
 const withEnroll = results.filter((r) => r.enrollments != null);

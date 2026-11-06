@@ -71,7 +71,8 @@ async function waitForRows(prevFirst, timeoutMs = 15000) {
   while (Date.now() - start < timeoutMs) {
     const rows = await readRows();
     if (rows.length && rows[0].slug !== prevFirst) {
-      const filled = rows.filter((r) => /Warning:|Created on|Starts on|Started on/.test(r.cells.join(' '))).length;
+      // Enrollment counts load after the status, so wait for both on every row.
+      const filled = rows.filter((r) => { const t = r.cells.join(' '); return /Warning:|Success:|Created on|Starts on|Started on|- present/.test(t) && /\d[\d,]*\s+enrollments?/.test(t); }).length;
       const sig = JSON.stringify(rows.map((r) => r.cells));
       steady = sig === last ? steady + 1 : 0;
       last = sig;
@@ -106,8 +107,12 @@ const parseRow = ({ name, slug, cells }) => {
   const all = cells.join(' | ');
   const enrol = all.match(/([\d,]+)\s+enrollments?/i);
   const rate = (cells[1] || '').match(/([\d.]+)\s*%/);
-  const when = all.match(/(Created on|Starts on|Started on|Launched on|Ended on|Ends on)\s+([A-Z][a-z]{2,8} \d{1,2}, \d{4})/);
-  const status = (all.match(/Warning:\s*([A-Za-z-]+)/) || all.match(/\b(New|Pending|Launched|Active|Ongoing|Ended|Archived|Draft|Preenroll)\b(?!.*\b(New|Pending|Launched|Active|Ongoing|Ended|Archived|Draft|Preenroll)\b)/i) || [])[1] || null;
+  // A launched course reads "Version 1 Oct 1, 2026 - present Success: Live Live";
+  // before launch it is "Starts on Oct 7, 2026 Warning: Pending Pending". Only
+  // "Warning:" was recognised at first, so every live course came back blank.
+  const when = all.match(/(Created on|Starts on|Started on|Launched on|Ended on|Ends on)\s+([A-Z][a-z]{2,8} \d{1,2}, \d{4})/)
+    || ((m) => m && [m[0], 'Live since', m[1]])(all.match(/([A-Z][a-z]{2,8} \d{1,2}, \d{4})\s*-\s*present/));
+  const status = (all.match(/(?:Warning|Success|Error|Info):\s*([A-Za-z-]+)/) || all.match(/\b(New|Pending|Launched|Active|Ongoing|Ended|Archived|Draft|Preenroll)\b(?!.*\b(New|Pending|Launched|Active|Ongoing|Ended|Archived|Draft|Preenroll)\b)/i) || [])[1] || null;
   return {
     name, slug,
     enrollments: enrol ? Number(enrol[1].replace(/,/g, '')) : null,
