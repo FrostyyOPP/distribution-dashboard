@@ -1130,9 +1130,12 @@ export function applyCourseLevelCompletion() {
     UPDATE coursera_cin_metrics SET completion_rate = (
       SELECT completion_rate FROM coursera_course_completion cc WHERE cc.catalog = 'cin' AND cc.slug = coursera_cin_metrics.slug)
     WHERE EXISTS (SELECT 1 FROM coursera_course_completion cc WHERE cc.catalog = 'cin' AND cc.slug = coursera_cin_metrics.slug AND cc.completion_rate IS NOT NULL);
-    UPDATE coursera_dummies_courses SET completion_rate = (
-      SELECT completion_rate FROM coursera_course_completion cc WHERE cc.catalog = 'dummies' AND cc.slug = coursera_dummies_courses.slug)
-    WHERE EXISTS (SELECT 1 FROM coursera_course_completion cc WHERE cc.catalog = 'dummies' AND cc.slug = coursera_dummies_courses.slug AND cc.completion_rate IS NOT NULL);
+    -- Dummies: the course page is the only figure shown, rate AND completed count, and a
+    -- page reading "No Results" blanks the rate rather than leaving the console's 0%.
+    UPDATE coursera_dummies_courses SET
+      completion_rate = (SELECT completion_rate FROM coursera_course_completion cc WHERE cc.catalog = 'dummies' AND cc.slug = coursera_dummies_courses.slug),
+      completions = (SELECT completed FROM coursera_course_completion cc WHERE cc.catalog = 'dummies' AND cc.slug = coursera_dummies_courses.slug)
+    WHERE EXISTS (SELECT 1 FROM coursera_course_completion cc WHERE cc.catalog = 'dummies' AND cc.slug = coursera_dummies_courses.slug);
   `);
 }
 
