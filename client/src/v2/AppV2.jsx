@@ -98,7 +98,12 @@ export default function AppV2() {
       setCoursera(d.courses || d.results || []);
       setCourseraQuarters(d.revenueQuarters || []);
     }).catch(() => {});
-    fetch('/api/coursera-dummies/courses').then((r) => r.json()).then((d) => setCourseraDummies(d.courses || [])).catch(() => {});
+    // Courses for Dummies: live courses only. The console also lists New and
+    // Unscheduled ones that learners can't open yet; the team asked (12 Nov) to
+    // leave those out of every view, not just the counts.
+    fetch('/api/coursera-dummies/courses').then((r) => r.json())
+      .then((d) => setCourseraDummies((d.courses || []).filter((c) => c.status && !NOT_LIVE.has(String(c.status).toLowerCase()))))
+      .catch(() => {});
     fetch('/api/coursera-cin/metrics').then((r) => r.json()).then((d) => setCourseraCin(d.courses || d.results || [])).catch(() => {});
     fetch('/api/coursera/reviews').then((r) => r.json()).then((d) => setCourseraReviews(d.bySlug || {})).catch(() => {});
     fetch('/api/coursera-cin/reviews').then((r) => r.json()).then((d) => setCourseraCinReviews(d.bySlug || {})).catch(() => {});
@@ -240,7 +245,6 @@ function Overview({ udemy, coursera, courseraCin, courseraDummies = [], futurele
   // COURSES FOR DUMMIES: live means launched. New and Pending courses are in
   // the console but not yet open to learners, so they are shown, not counted.
   const dumLaunched = courseraDummies.filter((c) => c.status && !NOT_LIVE.has(String(c.status).toLowerCase()));
-  const dumByStatus = courseraDummies.reduce((a, c) => ((a[c.status || 'unknown'] = (a[c.status || 'unknown'] || 0) + 1), a), {});
   const dumStats = { count: dumLaunched.length, all: courseraDummies.length, enroll: courseraDummies.reduce((s, c) => s + (c.enrollments || 0), 0) };
   const dumRated = courseraDummies.filter((c) => c.rating);
   const dumAvg = dumRated.length ? dumRated.reduce((s, c) => s + Number(c.rating), 0) / dumRated.length : 0;
@@ -299,7 +303,7 @@ function Overview({ udemy, coursera, courseraCin, courseraDummies = [], futurele
 
   const ratingValue = isCoursera ? cAvg : isCourseraCin ? cCinAvg : isCourseraDummies ? (dumAvg || null) : isGo1 ? (go1Avg || null) : (isFutureLearn || isLinkedIn) ? null : uAvg;
   const ratingTrend = isCoursera ? `across ${cRated.length} rated courses` : isCourseraCin ? `across ${cCinRated.length} rated courses`
-    : isCourseraDummies ? (dumRated.length ? `across ${dumRated.length} rated courses` : 'no ratings until courses launch')
+    : isCourseraDummies ? (dumRated.length ? `across ${dumRated.length} rated courses` : 'no ratings yet')
     : isFutureLearn ? 'not offered by FutureLearn' : isGo1 ? (go1Rated.length ? `across ${go1Rated.length} rated courses · ${num(go1RatingCount)} ratings` : 'no ratings yet')
     : isLinkedIn ? 'not exposed by the instructor portal'
     : isAll ? `Udemy only — based on ${num(reviews)} reviews` : `based on ${num(reviews)} reviews`;
@@ -400,13 +404,14 @@ function Overview({ udemy, coursera, courseraCin, courseraDummies = [], futurele
   } else if (isCourseraDummies) {
     const byCourse = [...courseraDummies].filter((c) => c.enrollments > 0).sort((a, b) => b.enrollments - a.enrollments).slice(0, 8)
       .map((c) => ({ label: c.name, value: c.enrollments, color: '#0066cc' }));
-    const statusBars = Object.entries(dumByStatus).sort((a, b) => b[1] - a[1])
-      .map(([label, value]) => ({ label: label.charAt(0).toUpperCase() + label.slice(1), value, color: label === 'pending' ? '#f59e0b' : label === 'new' ? '#9ca3af' : '#10b981' }));
+    // (Only live courses reach here, so a by-status chart would be one bar.)
+    const byCompleted = [...courseraDummies].filter((c) => c.completions > 0).sort((a, b) => b.completions - a.completions).slice(0, 8)
+      .map((c) => ({ label: c.name, value: c.completions, color: '#10b981' }));
     charts = (
       <div className="charts-section">
         <h2 className="section-title">📊 Courses for Dummies</h2>
         <div className="charts-grid">
-          <div className="chart-card"><h3>Courses by status</h3>{statusBars.length ? <BarChart data={statusBars} /> : <div className="chart-placeholder">No data</div>}</div>
+          <div className="chart-card"><h3>Completions by Course (top 8)</h3>{byCompleted.length ? <BarChart data={byCompleted} /> : <div className="chart-placeholder">No completions yet</div>}</div>
           <div className="chart-card"><h3>Enrollments by Course (top 8)</h3>{byCourse.length ? <BarChart data={byCourse} /> : <div className="chart-placeholder">No enrollments yet — the first sessions start {courseraDummies.find((c) => c.dateKind === 'Starts on')?.date || 'soon'}</div>}</div>
         </div>
       </div>
@@ -521,7 +526,7 @@ function Overview({ udemy, coursera, courseraCin, courseraDummies = [], futurele
           trend={isAll ? `${udemy.length} Udemy · ${courStats.count} Coursera · ${courCinStats.count} CIN · ${dumStats.count} Dummies · ${flStats.count} FutureLearn · ${liStats.count} LinkedIn · ${go1Stats.count} Go1`
             // LinkedIn used to fall through to 'Go1' here.
             : isUdemy ? 'Udemy' : isCoursera ? 'Coursera' : isCourseraCin ? `Coursera CIN${courCinStats.drafts ? ` · ${courCinStats.drafts} drafts not counted` : ''}`
-            : isCourseraDummies ? `launched · ${Object.entries(dumByStatus).filter(([k]) => NOT_LIVE.has(k)).map(([k, v]) => `${v} ${k}`).join(' · ') || 'none waiting'} not yet counted` : isFutureLearn ? 'FutureLearn' : isLinkedIn ? 'LinkedIn Learning' : 'Go1'} />
+            : isCourseraDummies ? 'live courses' : isFutureLearn ? 'FutureLearn' : isLinkedIn ? 'LinkedIn Learning' : 'Go1'} />
         <Kpi icon="👥" bg="#cce5ff" fg="#0066cc" label="Total Enrollments" value={num(enroll)}
           trend={isAll ? 'all six platforms, lifetime — LinkedIn counts learners' : isFutureLearn ? `known — ${flStats.known}/${flStats.count} courses` : isGo1 ? `lifetime${go1Stats.firstMonth ? ` (since ${go1Stats.firstMonth})` : ''}` : 'across the portfolio'} />
         <Kpi icon="💵" bg="#dcfce7" fg="#10b981" label="Lifetime Revenue" value={revenueValue} trend={revenueTrend} />

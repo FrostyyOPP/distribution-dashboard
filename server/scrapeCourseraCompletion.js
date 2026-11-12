@@ -41,11 +41,14 @@ const courses = [
   ...db.prepare("SELECT 'dummies' AS catalog, slug, name FROM coursera_dummies_courses WHERE status = 'live'").all(),
 ].filter((c) => c.slug && (!ONLY || ONLY.includes(c.slug)));
 const last = new Map(db.prepare("SELECT catalog || '/' || slug AS k, captured_at FROM coursera_course_completion").all().map((r) => [r.k, r.captured_at]));
+// Dummies courses are new and their numbers move daily, and there are only ~20, so
+// they are re-read on every daily run (older than 20 h) and don't count against --max.
 const weekAgo = new Date(Date.now() - 6 * 864e5).toISOString();
-const stale = courses.filter((c) => FORCE || ONLY || !(last.get(`${c.catalog}/${c.slug}`) > weekAgo))
+const dayAgo = new Date(Date.now() - 20 * 36e5).toISOString();
+const stale = courses.filter((c) => FORCE || ONLY || !(last.get(`${c.catalog}/${c.slug}`) > (c.catalog === 'dummies' ? dayAgo : weekAgo)))
   .sort((a, b) => (last.get(`${a.catalog}/${a.slug}`) || '').localeCompare(last.get(`${b.catalog}/${b.slug}`) || ''));
-const todo = stale.slice(0, MAX);
-console.log(`${courses.length} launched courses · ${stale.length} not read in 6 days · reading ${todo.length} now`);
+const todo = [...stale.filter((c) => c.catalog === 'dummies'), ...stale.filter((c) => c.catalog !== 'dummies').slice(0, MAX)];
+console.log(`${courses.length} launched courses · ${stale.length} due (6 days; Dummies daily) · reading ${todo.length} now`);
 if (!todo.length) { applyCourseLevelCompletion(); process.exit(0); }
 
 const browser = await chromium.launch({ headless: false, args: ['--disable-blink-features=AutomationControlled'], ignoreDefaultArgs: ['--enable-automation'] });
