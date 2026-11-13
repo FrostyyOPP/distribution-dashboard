@@ -85,10 +85,17 @@ async function readFunnel() {
 
 // Some CIN courses give this account no Analytics tab at all: the funnel link
 // redirects to the course overview. Nothing to read there — note it and move on.
+// Others stay on the funnel URL but show only Overview and Course Settings in the
+// course menu, with "Loading the dashboard" forever (e.g. openai-chatgpt-enterprise-
+// solutions-unleashed-1). No Progress Funnel link in the menu means no access too.
 async function noAnalytics() {
-  for (let t = 0; t < 8; t++) {
+  for (let t = 0; t < 12; t++) {
     if (/\/course\/overview/.test(page.url())) return true;
     if (page.frames().some((f) => /looker/.test(f.url()))) return false;
+    if (t >= 7) {
+      const txt = await page.evaluate(() => document.body?.innerText || '').catch(() => '');
+      if (/Course Settings/.test(txt) && !/Progress Funnel/.test(txt)) return true;
+    }
     await sleep(1000);
   }
   return /\/course\/overview/.test(page.url());
