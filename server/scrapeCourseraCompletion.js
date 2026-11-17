@@ -35,11 +35,25 @@ const startedAt = new Date().toISOString();
 
 if (!existsSync(AUTH_FILE)) { console.error('❌ Coursera not connected.'); process.exit(1); }
 
-const courses = [
+// A renamed course has a row per title in coursera_course_status (both 'launched'), so the
+// rows are merged per catalogue+slug, keeping every title it has had (see readFunnel).
+const rows = [
   ...db.prepare("SELECT 'starweaver' AS catalog, slug, course_name AS name FROM coursera_course_status WHERE status = 'launched'").all(),
   ...db.prepare("SELECT 'cin' AS catalog, slug, course_name AS name FROM coursera_cin_metrics WHERE status = 'launched'").all(),
   ...db.prepare("SELECT 'dummies' AS catalog, slug, name FROM coursera_dummies_courses WHERE status = 'live'").all(),
-].filter((c) => c.slug && (!ONLY || ONLY.includes(c.slug)));
+].filter((c) => c.slug);
+const merged = new Map();
+for (const c of rows) {
+  const e = merged.get(`${c.catalog}/${c.slug}`) || { ...c, names: [] };
+  if (c.name && !e.names.includes(c.name)) e.names.push(c.name);
+  merged.set(`${c.catalog}/${c.slug}`, e);
+}
+const courses = [...merged.values()].filter((c) => !ONLY || ONLY.includes(c.slug));
+// Every course title we know, with its slug — to recognise another course's page. The IBM
+// courses are in it because the IBM monthly report opens their funnel pages too.
+let ibmNames = [];
+try { ibmNames = db.prepare("SELECT DISTINCT slug, name FROM ibm_coursera_monthly WHERE kind = 'course'").all(); } catch {}
+const known = [...rows, ...ibmNames].filter((c) => c.name);
 const last = new Map(db.prepare("SELECT catalog || '/' || slug AS k, captured_at FROM coursera_course_completion").all().map((r) => [r.k, r.captured_at]));
 // Dummies courses are new and their numbers move daily, and there are only ~20, so
 // they are re-read on every daily run (older than 20 h) and don't count against --max.
@@ -59,10 +73,23 @@ await parkWindow(ctx, page); // out of sight but rendering — Looker skips tile
 
 const HEAD = 'Completion Rate (Completed/Enrollment)';
 const num = (s) => (s == null ? null : Number(String(s).replace(/[,%]/g, '')));
+const norm = (s) => String(s || '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+// Our stored name and the one on the tile can differ slightly (punctuation, a subtitle
+// added later), so "same course" = equal, one contains the other, or 80% of the words shared.
+function sameCourse(a, b) {
+  const x = norm(a), y = norm(b);
+  if (!x || !y || x === y || x.includes(y) || y.includes(x)) return true;
+  const wx = new Set(x.split(' ')), wy = new Set(y.split(' '));
+  return [...wx].filter((w) => wy.has(w)).length / Math.max(wx.size, wy.size) >= 0.8;
+}
 
 // The "Course Level Metrics" tile, as rendered text: its header row, then
 // "1", course name, enrollment, first-half completed, completed, rate%.
-async function readFunnel() {
+// TRAP (found 2026-11-17): the first funnel page a browser opens can show the course
+// Coursera's Looker embed was last on — another course's numbers — and stay there until
+// reloaded. So the course name on the tile must match the course we asked for; if not,
+// { wrong: <name shown> } comes back and the caller reloads.
+async function readFunnel(c) {   // → { enrolled, firstHalf, completed, rate, shown } | { empty } | { wrong, ... } | null
   for (let t = 0; t < 60; t++) {
     for (const f of page.frames()) {
       if (!/looker/.test(f.url())) continue;
@@ -75,7 +102,9 @@ async function readFunnel() {
       const pct = lines.findIndex((l) => /^\d+(\.\d+)?%$/.test(l));
       if (pct >= 3) {
         const [enrolled, firstHalf, completed] = lines.slice(pct - 3, pct).map(num);
-        return { enrolled, firstHalf, completed, rate: num(lines[pct]) / 100 };
+        const shown = pct >= 4 ? lines[pct - 4] : null;
+        const res = { enrolled, firstHalf, completed, rate: num(lines[pct]) / 100, shown };
+        return !shown || c.names.some((n) => sameCourse(shown, n)) ? res : { ...res, wrong: shown };
       }
     }
     await sleep(1000);
@@ -109,13 +138,22 @@ for (const [k, c] of todo.entries()) {
     if (!DRY) writeCourseLevelCompletion({ catalog: c.catalog, slug: c.slug, name: c.name });   // re-checked weekly like the rest
     continue;
   }
-  let r = await readFunnel();
-  if (!r) { await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {}); r = await readFunnel(); }
+  let r = await readFunnel(c);
+  if (!r) { await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {}); r = await readFunnel(c); }
+  for (let tries = 0; r?.wrong && tries < 2; tries++) { await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {}); r = await readFunnel(c); }
   const tag = `${String(k + 1).padStart(3)}/${todo.length} · ${c.catalog} · ${c.slug}`;
   if (!r) { failed++; console.log(`  ${tag}: ❌ page did not show the Course Level Metrics`); continue; }
+  if (r.wrong) {
+    // Still a title we don't have for this course after reloading. If it is another course's
+    // title, the page is stuck on that course: don't save. If it is no course we know, the
+    // course was renamed on Coursera (and the reload ruled out the stale first page): keep it.
+    const other = known.find((o) => o.slug !== c.slug && sameCourse(r.wrong, o.name));
+    if (other) { failed++; console.log(`  ${tag}: ❌ page kept showing another course ("${r.wrong}") — not saved`); continue; }
+    console.log(`  ${tag}: (now called "${r.wrong}" on Coursera)`);
+  }
   if (r.empty) { empty++; console.log(`  ${tag}: no learners in the funnel yet`); }
   else { ok++; console.log(`  ${tag}: ${(r.rate * 100).toFixed(2)}% (${r.completed}/${r.enrolled})`); }
-  if (!DRY) writeCourseLevelCompletion({ catalog: c.catalog, slug: c.slug, name: c.name, ...(r.empty ? {} : r) });
+  if (!DRY) writeCourseLevelCompletion({ catalog: c.catalog, slug: c.slug, ...(r.empty ? {} : r), name: r.shown || c.name });   // the title Coursera shows now
 }
 await browser.close();
 
