@@ -22,7 +22,7 @@ import {
   readCourseraCourseItems, searchCourseraItems, readCourseraInstructorProfiles,
   readBookmarks, addBookmark, removeBookmark,
   readCourseraCinCourses, readCourseraCinMetrics, readCourseraCinOverview,
-  readFutureLearnCourses, readLinkedInCourses, readGo1Courses, readGo1Lifetime, readGo1Catalog, readCourseraDummiesCourses, readEngagement,
+  readFutureLearnCourses, readLinkedInCourses, readGo1Courses, readGo1Lifetime, readGo1Catalog, readCourseraDummiesCourses, readCourseraIbmCourses, readEngagement,
   readRevenueDashboard, readCourseRevenueAcrossPlatforms,
   readFreshness, readPlatformFreshness, rawQuery,
 } from './db.js';
@@ -573,6 +573,8 @@ app.get('/api/go1/courses', (req, res) => {
 // Courses for Dummies — the third Coursera partner console. Every course with
 // its status (New / Pending before launch), and Looker's figures once launched.
 app.get('/api/coursera-dummies/courses', (req, res) => res.json(readCourseraDummiesCourses()));
+// IBM courses on Coursera — Analytics › Summary figures stored nightly (plain DB read).
+app.get('/api/coursera-ibm/courses', (req, res) => res.json(readCourseraIbmCourses()));
 
 // The Go1 catalogue — every live course, with its language. The other Go1
 // routes are activity: they list only courses someone studied.

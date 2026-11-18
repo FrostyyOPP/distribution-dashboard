@@ -1713,6 +1713,50 @@ export function readCourseraDummiesCourses() {
   return { courses, scrapedAt };
 }
 
+// IBM courses on Coursera (the IBM list, from the IBM monthly report's latest month),
+// with figures from each course's Analytics › Summary page — read every night by
+// scrapeCourseraSummary.js and kept in coursera_course_summary (+ _monthly), so this is
+// a plain database read. Added 2026-11-18 at the user's request.
+export function readCourseraIbmCourses() {
+  let list;
+  try {
+    list = db.prepare(`SELECT slug, name, list_title, batch, status, certificate, level, launched, url,
+        enrollments, rating, ratings, reviews, visitors, starters, completions
+      FROM ibm_coursera_monthly WHERE kind = 'course' AND in_list = 1
+        AND month = (SELECT MAX(month) FROM ibm_coursera_monthly) ORDER BY name`).all();
+  } catch { return { courses: [], months: [], scrapedAt: null }; }   // no IBM table on this machine
+  const sumStmt = db.prepare('SELECT * FROM coursera_course_summary WHERE slug = ?');
+  const monStmt = db.prepare('SELECT month, visitors, enrollments, starters, completions FROM coursera_course_summary_monthly WHERE slug = ? ORDER BY month');
+  const thisMonth = nowIso().slice(0, 7);
+  const prev = new Date(); prev.setUTCDate(1); prev.setUTCMonth(prev.getUTCMonth() - 1);
+  const lastMonth = prev.toISOString().slice(0, 7);
+  const byMonth = {};
+  const courses = list.map((r) => {
+    const s = sumStmt.get(r.slug);
+    const monthly = monStmt.all(r.slug);
+    for (const m of monthly) {
+      const t = (byMonth[m.month] ||= { month: m.month, enrollments: 0, completions: 0, visitors: 0 });
+      t.enrollments += m.enrollments || 0; t.completions += m.completions || 0; t.visitors += m.visitors || 0;
+    }
+    const enrollments = s?.enrollments ?? r.enrollments, completions = s?.completions ?? r.completions;
+    return {
+      id: r.slug, slug: r.slug, name: r.name, listTitle: r.list_title, batch: r.batch, status: r.status,
+      certificate: r.certificate, domain: r.certificate, level: r.level, launched: r.launched,
+      url: r.url || `https://www.coursera.org/learn/${r.slug}`,
+      summaryUrl: `https://www.coursera.org/teach/${r.slug}/course/analytics/summary`,
+      visitors: s?.visitors ?? r.visitors, enrollments, starters: s?.starters ?? r.starters, completions,
+      completionRate: s?.completion_rate ?? (enrollments ? completions / enrollments : null),
+      rating: s?.rating ?? r.rating, ratings: s?.ratings ?? r.ratings, reviews: s?.reviews ?? r.reviews,
+      enrolledThisMonth: monthly.find((m) => m.month === thisMonth)?.enrollments ?? null,
+      enrolledLastMonth: monthly.find((m) => m.month === lastMonth)?.enrollments ?? null,
+      readAt: s?.captured_at ?? null,
+    };
+  });
+  const reads = courses.map((c) => c.readAt).filter(Boolean).sort();
+  return { courses, months: Object.values(byMonth).sort((a, b) => a.month.localeCompare(b.month)), thisMonth, lastMonth,
+    scrapedAt: reads.length ? reads[reads.length - 1] : null, oldestRead: reads[0] ?? null };
+}
+
 const insertGo1CatalogStmt = db.prepare(
   `INSERT INTO go1_catalog (lo_id, title, type, language, state, provider, rating, ratings_count, duration_minutes, url, updated_at)
    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`

@@ -62,8 +62,11 @@ for (const r of rows.filter((r) => r.slug)) {
 const courses = [...bySlug.values()].filter((c) => !ONLY || ONLY.includes(c.slug));
 const last = new Map(db.prepare('SELECT slug, captured_at FROM coursera_course_summary').all().map((r) => [r.slug, r.captured_at]));
 const since = new Date(Date.now() - 20 * 36e5).toISOString();
+// IBM courses first (15 of them, ~6 min), so the dashboard's IBM tab is fresh early in the
+// morning even though the whole step takes hours; then the stalest of the rest.
+const isIbm = (c) => (c.catalogs.includes('ibm') ? 0 : 1);
 const todo = courses.filter((c) => FORCE || ONLY || !(last.get(c.slug) > since))
-  .sort((a, b) => (last.get(a.slug) || '').localeCompare(last.get(b.slug) || '')).slice(0, MAX);
+  .sort((a, b) => isIbm(a) - isIbm(b) || (last.get(a.slug) || '').localeCompare(last.get(b.slug) || '')).slice(0, MAX);
 console.log(`${courses.length} courses · reading ${todo.length} now`);
 if (!todo.length) { if (!DRY) applyCourseSummary(); process.exit(0); }
 
