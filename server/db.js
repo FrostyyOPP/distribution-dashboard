@@ -433,6 +433,37 @@ db.exec(`
     PRIMARY KEY (slug, month)
   );
 
+  -- The courses of each IBM Professional Certificate, in certificate order (C1, C2, …),
+  -- from Coursera's public specialization API (scrapeCourseraFunnel.js). Added 2026-11-18.
+  CREATE TABLE IF NOT EXISTS ibm_certificate_courses (
+    cert_slug TEXT NOT NULL, cert_name TEXT, course_no INTEGER NOT NULL,
+    course_id TEXT, slug TEXT, name TEXT, updated_at TEXT,
+    PRIMARY KEY (cert_slug, course_no)
+  );
+  -- Each course's Analytics › Progress Funnel (scrapeCourseraFunnel.js), as Coursera shows it by
+  -- default: eligible learners, last 1 year, live version. Completion rate is the Course Level
+  -- Metrics tile; drop-off before Module 1 = the drop at "Module 01 Started Item"; drop-off
+  -- after Module 1 = 1 − completed course ÷ completed Module 1 (from the checkpoint drop rates).
+  CREATE TABLE IF NOT EXISTS coursera_course_funnel (
+    slug TEXT PRIMARY KEY,
+    course_name TEXT,
+    enrolled INTEGER, first_half INTEGER, completed INTEGER, completion_rate REAL,
+    drop_before_m1 REAL, drop_after_m1 REAL, modules INTEGER,
+    checkpoints TEXT,                  -- JSON [[checkpoint, drop rate], …]
+    no_access INTEGER DEFAULT 0,
+    captured_at TEXT NOT NULL,
+    -- the same page with the Eligible Learner filter cleared (all learners). Matters for courses
+    -- run in sessions: learners still in a live session are not "eligible", so the default view
+    -- of a new session course counts only those who already finished (e.g. 18/18 = 100%).
+    all_enrolled INTEGER, all_completed INTEGER, all_completion_rate REAL,
+    all_drop_before_m1 REAL, all_drop_after_m1 REAL
+  );
+  CREATE TABLE IF NOT EXISTS coursera_course_funnel_daily (
+    slug TEXT NOT NULL, date TEXT NOT NULL,          -- 'YYYY-MM-DD' (UTC)
+    enrolled INTEGER, completed INTEGER, completion_rate REAL, drop_before_m1 REAL, drop_after_m1 REAL,
+    PRIMARY KEY (slug, date)
+  );
+
   CREATE TABLE IF NOT EXISTS udemy_course_daily (
     date TEXT NOT NULL,                -- 'YYYY-MM-DD' (IST)
     course_id TEXT NOT NULL,
@@ -1718,43 +1749,73 @@ export function readCourseraDummiesCourses() {
 // scrapeCourseraSummary.js and kept in coursera_course_summary (+ _monthly), so this is
 // a plain database read. Added 2026-11-18 at the user's request.
 export function readCourseraIbmCourses() {
-  let list;
+  // The courses: every course of the IBM Professional Certificates in certificate order (C1, C2, …,
+  // ibm_certificate_courses), plus any IBM-list course in none of them. Batch / status / list title
+  // come from the IBM list (ibm_coursera_monthly, latest month) where the course is on it.
+  let listRows = [], certRows = [];
   try {
-    list = db.prepare(`SELECT slug, name, list_title, batch, status, certificate, level, launched, url,
+    listRows = db.prepare(`SELECT slug, name, list_title, batch, status, certificate, level, launched, url,
         enrollments, rating, ratings, reviews, visitors, starters, completions
-      FROM ibm_coursera_monthly WHERE kind = 'course' AND in_list = 1
-        AND month = (SELECT MAX(month) FROM ibm_coursera_monthly) ORDER BY name`).all();
-  } catch { return { courses: [], months: [], scrapedAt: null }; }   // no IBM table on this machine
+      FROM ibm_coursera_monthly WHERE kind = 'course' AND month = (SELECT MAX(month) FROM ibm_coursera_monthly)`).all();
+  } catch { /* no IBM table on this machine */ }
+  try { certRows = db.prepare('SELECT * FROM ibm_certificate_courses WHERE slug IS NOT NULL ORDER BY cert_name, course_no').all(); } catch {}
+  if (!listRows.length && !certRows.length) return { courses: [], months: [], scrapedAt: null };
+  const bySlug = new Map(listRows.map((r) => [r.slug, r]));
+  const base = certRows.length
+    ? [...certRows.map((c) => ({ slug: c.slug, cert: c.cert_name, certSlug: c.cert_slug, courseNo: c.course_no, name: c.name })),
+       ...listRows.filter((r) => r.list_title && !certRows.some((c) => c.slug === r.slug)).map((r) => ({ slug: r.slug, cert: r.certificate, certSlug: null, courseNo: null, name: r.name }))]
+    : listRows.filter((r) => r.list_title).map((r) => ({ slug: r.slug, cert: r.certificate, certSlug: null, courseNo: null, name: r.name }));
   const sumStmt = db.prepare('SELECT * FROM coursera_course_summary WHERE slug = ?');
   const monStmt = db.prepare('SELECT month, visitors, enrollments, starters, completions FROM coursera_course_summary_monthly WHERE slug = ? ORDER BY month');
+  let funStmt = null;
+  try { funStmt = db.prepare('SELECT * FROM coursera_course_funnel WHERE slug = ?'); } catch {}
   const thisMonth = nowIso().slice(0, 7);
   const prev = new Date(); prev.setUTCDate(1); prev.setUTCMonth(prev.getUTCMonth() - 1);
   const lastMonth = prev.toISOString().slice(0, 7);
   const byMonth = {};
-  const courses = list.map((r) => {
-    const s = sumStmt.get(r.slug);
-    const monthly = monStmt.all(r.slug);
-    for (const m of monthly) {
+  const courses = base.map((b) => {
+    const r = bySlug.get(b.slug) || {};
+    const s = sumStmt.get(b.slug);
+    const f = funStmt?.get(b.slug);
+    const monthly = monStmt.all(b.slug);
+    if (r.list_title) for (const m of monthly) {      // the monthly trend = the IBM list's courses
       const t = (byMonth[m.month] ||= { month: m.month, enrollments: 0, completions: 0, visitors: 0 });
       t.enrollments += m.enrollments || 0; t.completions += m.completions || 0; t.visitors += m.visitors || 0;
     }
-    const enrollments = s?.enrollments ?? r.enrollments, completions = s?.completions ?? r.completions;
+    const enrollments = s?.enrollments ?? r.enrollments ?? null, completions = s?.completions ?? r.completions ?? null;
+    const enrolledThisMonth = monthly.find((m) => m.month === thisMonth)?.enrollments ?? null;
     return {
-      id: r.slug, slug: r.slug, name: r.name, listTitle: r.list_title, batch: r.batch, status: r.status,
-      certificate: r.certificate, domain: r.certificate, level: r.level, launched: r.launched,
-      url: r.url || `https://www.coursera.org/learn/${r.slug}`,
-      summaryUrl: `https://www.coursera.org/teach/${r.slug}/course/analytics/summary`,
-      visitors: s?.visitors ?? r.visitors, enrollments, starters: s?.starters ?? r.starters, completions,
+      id: b.slug, slug: b.slug, name: (s?.course_name || b.name || r.name || '').trim(), listTitle: r.list_title ?? null, inList: !!r.list_title,
+      batch: r.batch ?? null, status: r.status ?? null, level: r.level ?? null, launched: r.launched ?? null,
+      certificate: b.cert ?? r.certificate ?? null, domain: b.cert ?? r.certificate ?? null, certSlug: b.certSlug, courseNo: b.courseNo,
+      url: r.url || `https://www.coursera.org/learn/${b.slug}`,
+      summaryUrl: `https://www.coursera.org/teach/${b.slug}/course/analytics/summary`,
+      funnelUrl: `https://www.coursera.org/teach/${b.slug}/course/analytics/course-progress-funnel`,
+      visitors: s?.visitors ?? r.visitors ?? null, enrollments, starters: s?.starters ?? r.starters ?? null, completions,
       completionRate: s?.completion_rate ?? (enrollments ? completions / enrollments : null),
-      rating: s?.rating ?? r.rating, ratings: s?.ratings ?? r.ratings, reviews: s?.reviews ?? r.reviews,
-      enrolledThisMonth: monthly.find((m) => m.month === thisMonth)?.enrollments ?? null,
-      enrolledLastMonth: monthly.find((m) => m.month === lastMonth)?.enrollments ?? null,
+      rating: s?.rating ?? r.rating ?? null, ratings: s?.ratings ?? r.ratings ?? null, reviews: s?.reviews ?? r.reviews ?? null,
+      enrolledThisMonth, enrolledLastMonth: monthly.find((m) => m.month === lastMonth)?.enrollments ?? null,
+      // enrolled at the end of last month (all time) = now − this month's new enrolments
+      enrolledEndLastMonth: enrollments != null && enrolledThisMonth != null ? enrollments - enrolledThisMonth : null,
       readAt: s?.captured_at ?? null,
+      // Progress Funnel (eligible learners, last 1 year, live version — Coursera's default view)
+      funnelCompletionRate: f?.completion_rate ?? null, dropBeforeM1: f?.drop_before_m1 ?? null, dropAfterM1: f?.drop_after_m1 ?? null,
+      funnelEnrolled: f?.enrolled ?? null, funnelCompleted: f?.completed ?? null, funnelNoAccess: !!f?.no_access, funnelReadAt: f?.captured_at ?? null,
+      // the same with all learners — differs most for courses run in sessions (see coursera_course_funnel)
+      allCompletionRate: f?.all_completion_rate ?? null, allDropBeforeM1: f?.all_drop_before_m1 ?? null, allDropAfterM1: f?.all_drop_after_m1 ?? null,
+      allFunnelEnrolled: f?.all_enrolled ?? null,
+      // most learners still in a live session: the default view then counts only those who finished
+      sessionCourse: !!(f?.all_enrolled && f?.enrolled != null && f.all_enrolled > f.enrolled && (f.completion_rate >= 0.99 || f.enrolled < 0.5 * f.all_enrolled)),
     };
   });
+  // Certificates in the IBM report's order (oldest first, as the team lists them); courses by C1, C2, …
+  const CERT_ORDER = ['ibm-management-consultant', 'ibm-sales-representative', 'ibm-business-process-automation-with-ai-assistants', 'ibm-building-and-managing-agentic-teams'];
+  const certRank = (c) => { const i = CERT_ORDER.indexOf(c.certSlug); return i < 0 ? 99 : i; };
+  courses.sort((a, b) => certRank(a) - certRank(b) || String(a.certificate || '').localeCompare(String(b.certificate || '')) || (a.courseNo ?? 99) - (b.courseNo ?? 99));
   const reads = courses.map((c) => c.readAt).filter(Boolean).sort();
+  const freads = courses.map((c) => c.funnelReadAt).filter(Boolean).sort();
   return { courses, months: Object.values(byMonth).sort((a, b) => a.month.localeCompare(b.month)), thisMonth, lastMonth,
-    scrapedAt: reads.length ? reads[reads.length - 1] : null, oldestRead: reads[0] ?? null };
+    scrapedAt: reads.length ? reads[reads.length - 1] : null, oldestRead: reads[0] ?? null, funnelReadAt: freads.length ? freads[freads.length - 1] : null };
 }
 
 const insertGo1CatalogStmt = db.prepare(

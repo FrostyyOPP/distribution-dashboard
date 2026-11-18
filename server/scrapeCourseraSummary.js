@@ -53,6 +53,8 @@ try {
   rows.push(...db.prepare(`SELECT 'ibm' AS catalog, slug, name FROM ibm_coursera_monthly
     WHERE kind = 'course' AND in_list = 1 AND month = (SELECT MAX(month) FROM ibm_coursera_monthly)`).all());
 } catch { /* no IBM table on this machine */ }
+// …and every course of the IBM Professional Certificates (the IBM tab shows all of them).
+try { rows.push(...db.prepare("SELECT 'ibm' AS catalog, slug, name FROM ibm_certificate_courses WHERE slug IS NOT NULL").all()); } catch {}
 const bySlug = new Map();
 for (const r of rows.filter((r) => r.slug)) {
   const e = bySlug.get(r.slug) || { slug: r.slug, name: r.name, catalogs: [] };
@@ -199,7 +201,10 @@ async function visit(c) {
     }
     if (t % 8 === 7) { await page.mouse.move(700, 600).catch(() => {}); await page.mouse.wheel(0, 2000).catch(() => {}); }   // in case a tile still waits
     res = cleared ? read(q) : null;
-    if (res && (res.modules.length || res.items.length || !res.completions || t >= 25)) { state = 'ok'; break; }   // the name tiles can lag
+    // The name tiles can lag. A course with no completions yet needn't wait for them — but a page whose
+    // tiles are still all empty (0 enrolled, no names) isn't an answer: found 2026-11-18, two IBM courses
+    // with 260k and 2.7k learners were saved as all zeros. Such a page counts only once it has had time.
+    if (res && (res.modules.length || res.items.length || (res.enrollments > 0 && !res.completions) || t >= 25)) { state = 'ok'; break; }
     const tiles = Object.keys(q).filter((k) => !k.startsWith('__')).length;
     // The first page opened for a course switches Looker over to it and then stalls after one tile;
     // a second page then loads every tile in ~4 s. So give up on a stalled page early and open a fresh one.
@@ -224,7 +229,11 @@ for (const [k, c] of todo.entries()) {
   for (let tries = 0; (r.state === 'another course' || r.state === 'timeout') && tries < 3; tries++) r = await visit(c);
   if (r.state === 'no access') { locked++; console.log(`  ${tag}: no Analytics access for this account`); continue; }
   if (r.state !== 'ok') { failed++; console.log(`  ${tag}: ❌ ${r.state === 'another course' ? 'page kept showing another course' : 'page did not load its figures'} — not saved`); continue; }
-  const x = r.res; ok++;
+  const x = r.res;
+  // Never replace real figures with an empty reading (a page that never filled its tiles).
+  const before = db.prepare('SELECT enrollments FROM coursera_course_summary WHERE slug = ?').get(c.slug)?.enrollments;
+  if (!x.enrollments && before > 0) { failed++; console.log(`  ${tag}: ❌ page showed 0 enrolled (had ${before}) — not saved`); continue; }
+  ok++;
   console.log(`  ${tag}: enrolled ${x.enrollments} · started ${x.starters} · completed ${x.completions} (${x.completionRate == null ? '—' : (x.completionRate * 100).toFixed(1) + '%'}) · ${x.ratings} ratings${x.rating ? ' ' + x.rating.toFixed(2) + '★' : ''} · ${x.reviews} reviews · ${x.checked} · ${Math.round((Date.now() - t0) / 1000)}s`);
   if (!DRY) writeCourseSummary({ slug: c.slug, name: c.name, catalogs: c.catalogs, ...x });
 }

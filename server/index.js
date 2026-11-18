@@ -575,6 +575,16 @@ app.get('/api/go1/courses', (req, res) => {
 app.get('/api/coursera-dummies/courses', (req, res) => res.json(readCourseraDummiesCourses()));
 // IBM courses on Coursera — Analytics › Summary figures stored nightly (plain DB read).
 app.get('/api/coursera-ibm/courses', (req, res) => res.json(readCourseraIbmCourses()));
+// The IBM tab's Excel export, in the IBM report's layout (ibmExport.js). ?certificate=<name> limits it.
+app.get('/api/coursera-ibm/export.xlsx', async (req, res, next) => {
+  try {
+    const { buildIbmWorkbook } = await import('./ibmExport.js');
+    const buf = await buildIbmWorkbook(readCourseraIbmCourses(), { certificate: req.query.certificate || null });
+    res.set('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.set('Content-Disposition', `attachment; filename="IBM Coursera courses ${new Date().toISOString().slice(0, 10)}.xlsx"`);
+    res.send(Buffer.from(buf));
+  } catch (e) { next(e); }
+});
 
 // The Go1 catalogue — every live course, with its language. The other Go1
 // routes are activity: they list only courses someone studied.
