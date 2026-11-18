@@ -1,6 +1,22 @@
-// Scrapes public Udemy course pages for enrollment counts (not in the API).
-// Writes to dashboard.db (merge upsert — never deletes existing counts).
+// Udemy students per course, from the INSTRUCTOR side (not the public course pages).
 // Run: npm run scrape:enrollment
+//
+// Source: the instructor's own course list, api-2.0/users/me/taught-courses
+// (field num_subscribers), read with the connected Udemy session in a HEADED
+// browser (Cloudflare blocks headless on api-2.0). It covers every course we
+// teach, published or not, and its sum equals "Total students" on Instructor ›
+// Performance › Overview (api-2.0/instructor-performance/enrollment-metrics),
+// which is checked before anything is saved.
+//
+// Why not the public pages any more (changed 2026-11-18, user asked for admin-side
+// data wherever it exists): public pages lag the instructor figures, and 46 of
+// 200 courses (≈78k students) have no public page to read at all.
+//
+// The instructor API (API key) has no student count, so it is only used to map
+// api-2.0's numeric course ids onto the ids the dashboard keys on, by slug.
+// Writes enrollment (merge upsert — never deletes a course's last known count).
+// --force is accepted for update-all compatibility; every run reads every course.
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { chromium } from 'playwright';
@@ -9,107 +25,82 @@ import { udemyGet } from './udemyClient.js';
 import { writeEnrollment, readEnrollment } from './db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-// Sequential — Cloudflare blocks parallel page loads. Reusing one context keeps
-// the cf_clearance cookie so only the first page pays the challenge cost.
-const FORCE = process.argv.includes('--force'); // re-scrape even if already cached
-const UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36';
-
+const AUTH_FILE = join(__dirname, 'udemy-auth.json');
+const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const extractStudents = (text) => {
-  const m = text.match(/([\d,]+)\s+students/i);
-  return m ? Number(m[1].replace(/,/g, '')) : null;
-};
 
-async function getAllCourses() {
-  const all = [];
-  let page = 1;
-  while (true) {
-    const data = await udemyGet('/taught-courses/courses/', {
-      page,
-      page_size: 100,
-      'fields[course]': '@default,published_title,is_published',
-    });
-    all.push(...(data.results || []));
-    if (!data.next) break;
-    page += 1;
-  }
-  return all;
+if (!existsSync(AUTH_FILE)) {
+  console.error('❌ Not connected. Use "Connect Udemy" in the dashboard first.');
+  process.exit(1);
 }
 
-async function scrapeOne(browser, course) {
-  const slug = course.published_title;
-  if (!slug) return { id: course.id, students: null, reason: 'no slug' };
-  const url = `https://www.udemy.com/course/${slug}/`;
+// The dashboard's course ids (instructor API), by slug.
+const apiCourses = [];
+for (let p = 1; ; p++) {
+  const d = await udemyGet('/taught-courses/courses/', { page: p, page_size: 100, 'fields[course]': '@default,published_title' });
+  apiCourses.push(...(d.results || []));
+  if (!d.next) break;
+}
+const idBySlug = new Map(apiCourses.filter((c) => c.published_title).map((c) => [c.published_title, c.id]));
+const idByTitle = new Map(apiCourses.map((c) => [c.title, c.id]));
 
-  // Fresh CONTEXT per course — Cloudflare rate-limits rapid same-session
-  // requests, so each scrape looks like a brand-new visitor. Bounded ~20s.
-  const ctx = await browser.newContext({ userAgent: UA, locale: 'en-US' });
-  const page = await ctx.newPage();
-  await minimizeWindow(ctx, page); // keep the automation window out of the user's way
-  try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {});
-    let students = extractStudents(await page.evaluate(() => document.body.innerText));
-    if (students == null) {
-      await page
-        .waitForFunction(() => /([\d,]+)\s+students/i.test(document.body.innerText), { timeout: 4000 })
-        .catch(() => {});
-      students = extractStudents(await page.evaluate(() => document.body.innerText));
-    }
-    return { id: course.id, students, reason: students == null ? 'no match' : undefined };
-  } catch (e) {
-    return { id: course.id, students: null, reason: e.message.slice(0, 60) };
-  } finally {
-    await ctx.close();
+const browser = await chromium.launch({ headless: false, args: ['--disable-blink-features=AutomationControlled'], ignoreDefaultArgs: ['--enable-automation'] });
+const ctx = await browser.newContext({ storageState: AUTH_FILE, userAgent: UA });
+await ctx.addInitScript(() => Object.defineProperty(navigator, 'webdriver', { get: () => undefined }));
+const page = await ctx.newPage();
+await minimizeWindow(ctx, page);
+
+async function apiGet(url) {
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+  for (let i = 0; i < 8; i++) {
+    const body = (await page.evaluate(() => document.body.innerText).catch(() => '')).trim();
+    if (body.startsWith('{') || body.startsWith('[')) { try { return JSON.parse(body); } catch {} }
+    await sleep(1500);
   }
+  return null;
 }
 
-// Load prior counts so re-runs skip what we already have and never lose data.
-let counts = readEnrollment().counts;
-const save = () => writeEnrollment(counts);
-
-console.log('Fetching course list from the API…');
-const courses = await getAllCourses();
-const todo = courses.filter((c) => FORCE || counts[c.id] == null);
-console.log(
-  `Found ${courses.length} courses; ${courses.length - todo.length} already cached, ${todo.length} to scrape.`
-);
-
-const browser = await chromium.launch({ headless: true });
-// NB: do NOT block stylesheets/fonts — it intermittently breaks Udemy's pages.
-
-let ok = 0;
-let streak = 0; // consecutive misses → sign the IP got rate-limited
-for (let i = 0; i < todo.length; i++) {
-  const r = await scrapeOne(browser, todo[i]);
-  if (r.students != null) {
-    counts[r.id] = r.students;
-    ok++;
-    streak = 0;
-    if (ok % 5 === 0) save(); // checkpoint so a crash keeps progress
-  } else {
-    streak++;
+let mine = [], total = null;
+for (let attempt = 1; attempt <= 3 && !mine.length; attempt++) {
+  if (attempt > 1) console.log(`Retrying (attempt ${attempt}/3)…`);
+  await page.goto('https://www.udemy.com/instructor/courses/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});   // warms up Cloudflare
+  await sleep(4000);
+  const got = [];
+  let url = 'https://www.udemy.com/api-2.0/users/me/taught-courses/?page_size=100&fields[course]=title,published_title,num_subscribers';
+  while (url) {
+    const d = await apiGet(url);
+    if (!d || !Array.isArray(d.results)) { got.length = 0; break; }
+    got.push(...d.results); url = d.next;
   }
-  process.stdout.write(
-    `\r  ${i + 1}/${todo.length} · ${ok} found${r.students != null ? ` · ${todo[i].published_title}: ${r.students}` : ''}            `
-  );
-
-  // After 6 misses in a row, Cloudflare has almost certainly throttled this IP.
-  // Pause to let the rate-limit window reset, then carry on — lets one run
-  // self-heal instead of needing manual re-runs.
-  if (streak >= 6) {
-    process.stdout.write(`\n  ⏸ ${streak} misses in a row — cooling down 90s for the rate limit…\n`);
-    save();
-    await sleep(90000);
-    streak = 0;
-  }
-  await sleep(2000 + Math.floor(Math.random() * 2000)); // pace under CF rate limit
+  mine = got;
 }
-process.stdout.write('\n');
+const em = mine.length ? await apiGet('https://www.udemy.com/api-2.0/instructor-performance/enrollment-metrics/?fields[user]=total&data_scope=all&date_filter=all') : null;
+total = em?.results?.[0]?.total ?? null;
 await browser.close();
-save();
 
-const total = Object.values(counts).reduce((s, n) => s + n, 0);
-console.log(`✅ Got enrollment for ${ok}/${todo.length} new courses this run.`);
-console.log(`   Cache now holds ${Object.keys(counts).length}/${courses.length} courses, ${total.toLocaleString()} total students.`);
-console.log(`   Re-run \`npm run scrape:enrollment\` to retry the misses (cached ones are skipped).`);
+if (!mine.length) { console.error('❌ Could not read the instructor course list — session expired? Reconnect Udemy. Nothing saved.'); process.exit(1); }
+
+const counts = {}, unmatched = [];
+for (const c of mine) {
+  const id = idBySlug.get(c.published_title) ?? idByTitle.get(c.title);
+  if (id == null || c.num_subscribers == null) { unmatched.push(c.title); continue; }
+  counts[id] = c.num_subscribers;
+}
+const sum = Object.values(counts).reduce((s, n) => s + n, 0);
+const sumAll = mine.reduce((s, c) => s + (c.num_subscribers || 0), 0);
+
+// Guards: the list must be (nearly) complete and agree with the instructor's own total.
+if (Object.keys(counts).length < 0.9 * apiCourses.length) {
+  console.error(`❌ Only ${Object.keys(counts).length}/${apiCourses.length} courses matched — not saved.`); process.exit(1);
+}
+if (total != null && Math.abs(sumAll - total) > Math.max(50, 0.005 * total)) {
+  console.error(`❌ Course figures add up to ${sumAll.toLocaleString()} but Udemy's total is ${total.toLocaleString()} — not saved.`); process.exit(1);
+}
+
+const before = readEnrollment().counts;
+const lower = Object.entries(counts).filter(([id, n]) => before[id] != null && n < before[id]);
+writeEnrollment(counts);
+console.log(`✅ Udemy students (instructor side): ${Object.keys(counts).length}/${apiCourses.length} courses · ${sum.toLocaleString()} students` +
+  (total != null ? ` · Udemy's total ${total.toLocaleString()}` : ' · (total not available to cross-check)') +
+  (unmatched.length ? ` · ${unmatched.length} unmatched: ${unmatched.slice(0, 5).join('; ')}` : '') +
+  (lower.length ? ` · ${lower.length} lower than before (refunds/removals)` : ''));

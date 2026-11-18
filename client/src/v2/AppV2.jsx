@@ -46,6 +46,7 @@ export default function AppV2() {
   const [courseraQuarters, setCourseraQuarters] = useState([]);
   const [courseraCin, setCourseraCin] = useState([]);
   const [courseraDummies, setCourseraDummies] = useState([]);
+  const [courseraIbm, setCourseraIbm] = useState({ courses: [], months: [] });
   const [courseraReviews, setCourseraReviews] = useState({});
   const [courseraCinReviews, setCourseraCinReviews] = useState({});
   const [futurelearn, setFuturelearn] = useState([]);
@@ -104,6 +105,8 @@ export default function AppV2() {
     fetch('/api/coursera-dummies/courses').then((r) => r.json())
       .then((d) => setCourseraDummies((d.courses || []).filter((c) => c.status && !NOT_LIVE.has(String(c.status).toLowerCase()))))
       .catch(() => {});
+    // IBM courses on Coursera — Summary-page figures stored nightly, so this is quick.
+    fetch('/api/coursera-ibm/courses').then((r) => r.json()).then((d) => setCourseraIbm({ courses: d.courses || [], months: d.months || [], scrapedAt: d.scrapedAt, oldestRead: d.oldestRead, thisMonth: d.thisMonth, lastMonth: d.lastMonth })).catch(() => {});
     fetch('/api/coursera-cin/metrics').then((r) => r.json()).then((d) => setCourseraCin(d.courses || d.results || [])).catch(() => {});
     fetch('/api/coursera/reviews').then((r) => r.json()).then((d) => setCourseraReviews(d.bySlug || {})).catch(() => {});
     fetch('/api/coursera-cin/reviews').then((r) => r.json()).then((d) => setCourseraCinReviews(d.bySlug || {})).catch(() => {});
@@ -174,13 +177,14 @@ export default function AppV2() {
             : <LoginBanner sessions={sessions} setSessions={setSessions} onSettings={() => setView('settings')} />}
           {adminNotes && view !== 'settings' && <StaleBanner freshness={freshness} platform={platform} />}
           <div className="platform-tabs">
-            {[['all', 'All Platforms'], ['udemy', 'Udemy'], ['coursera', 'Coursera'], ['coursera_cin', 'Coursera CIN'], ['coursera_dummies', 'Courses for Dummies'], ['futurelearn', 'FutureLearn'], ['linkedin', 'LinkedIn'], ['go1', 'Go1']].map(([k, l]) => (
-              <button key={k} className={'ptab' + (platform === k ? ' active' : '') + (k === 'coursera' || k === 'coursera_cin' || k === 'coursera_dummies' ? ' p-coursera' : '')} onClick={() => setPlatform(k)}>{l}</button>
+            {[['all', 'All Platforms'], ['udemy', 'Udemy'], ['coursera', 'Coursera'], ['coursera_cin', 'Coursera CIN'], ['coursera_dummies', 'Courses for Dummies'], ['coursera_ibm', 'IBM'], ['futurelearn', 'FutureLearn'], ['linkedin', 'LinkedIn'], ['go1', 'Go1']].map(([k, l]) => (
+              <button key={k} className={'ptab' + (platform === k ? ' active' : '') + (k === 'coursera' || k === 'coursera_cin' || k === 'coursera_dummies' || k === 'coursera_ibm' ? ' p-coursera' : '')} onClick={() => setPlatform(k)}>{l}</button>
             ))}
           </div>
-          {view === 'overview' && <Overview udemy={udemy} coursera={coursera} courseraCin={courseraCin} courseraDummies={courseraDummies} futurelearn={futurelearn} linkedin={linkedin} go1={go1.courses} go1Lifetime={go1Lifetime} go1Catalog={go1Catalog} totalRevenue={totalRevenue} platform={platform} monthly={monthly} engagement={engagement} />}
+          {platform === 'coursera_ibm' && (view === 'overview' || view === 'courses') && <IbmView data={courseraIbm} />}
+          {view === 'overview' && platform !== 'coursera_ibm' && <Overview udemy={udemy} coursera={coursera} courseraCin={courseraCin} courseraDummies={courseraDummies} futurelearn={futurelearn} linkedin={linkedin} go1={go1.courses} go1Lifetime={go1Lifetime} go1Catalog={go1Catalog} totalRevenue={totalRevenue} platform={platform} monthly={monthly} engagement={engagement} />}
           {view === 'watchlist' && <Watchlist bookmarks={bookmarks} udemy={udemy} coursera={coursera} courseraCin={courseraCin} courseraDummies={courseraDummies} futurelearn={futurelearn} linkedin={linkedin.courses} go1={go1Lifetime.courses.length ? go1Lifetime.courses : go1.courses} platform={platform} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} onOpen={setSelected} />}
-          {view === 'courses' && (
+          {view === 'courses' && platform !== 'coursera_ibm' && (
             /* key by platform — both tabs render CourseraView, and without a
                distinct key React reuses the instance and carries the search
                term and sort over to the other catalog. */
@@ -192,7 +196,9 @@ export default function AppV2() {
             : platform === 'go1' ? <Go1View rows={go1.courses} month={go1.month} lifetime={go1Lifetime} catalog={go1Catalog} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : <Courses udemy={udemy} totalRevenue={totalRevenue} onOpen={setSelected} onRefresh={load} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
           )}
-          {view === 'earnings' && (platform === 'coursera'
+          {view === 'earnings' && (platform === 'coursera_ibm'
+            ? <PlatformUnavailable platform={platform} title="Earnings" note="IBM course revenue isn't in the dashboard — Coursera pays IBM, and the IBM royalty figures live in the SharePoint ledgers." />
+            : platform === 'coursera'
             ? <CourseraEarnings rows={coursera} label="Coursera" />
             : platform === 'coursera_cin'
             ? <CourseraEarnings rows={courseraCin} label="Coursera CIN" />
@@ -205,13 +211,13 @@ export default function AppV2() {
             : platform === 'linkedin'
             ? <PlatformUnavailable platform={platform} title="Earnings" note="The LinkedIn Learning instructor portal exposes no revenue at all — only learners, shares and likes." />
             : <Earnings udemy={udemy} totalRevenue={totalRevenue} monthly={monthly} platform={platform} coursera={coursera} />)}
-          {view === 'minutes' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'coursera_dummies' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
+          {view === 'minutes' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'coursera_dummies' || platform === 'coursera_ibm' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Minutes" note="Minutes-consumed tracking is a Udemy feature — this platform's courses aren't covered here." />
             : <MinutesReport udemy={udemy} />)}
-          {view === 'captions' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'coursera_dummies' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
+          {view === 'captions' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'coursera_dummies' || platform === 'coursera_ibm' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Captions" note="Caption localization is a Udemy feature — this platform's courses aren't covered here." />
             : <Captions udemy={udemy} onRefresh={load} />)}
-          {view === 'coupons' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'coursera_dummies' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
+          {view === 'coupons' && (platform === 'coursera' || platform === 'coursera_cin' || platform === 'coursera_dummies' || platform === 'coursera_ibm' || platform === 'futurelearn' || platform === 'linkedin' || platform === 'go1'
             ? <PlatformUnavailable platform={platform} title="Coupons" note="Coupon tracking is a Udemy feature — this platform doesn't have promotional codes tracked here." />
             : <Coupons udemy={udemy} />)}
           {view === 'settings' && <Settings conn={conn} dark={dark} setDark={setDark} lastUpdate={lastUpdate} lastRun={lastRun} onRefresh={load} />}
@@ -577,7 +583,100 @@ function ActiveFilter({ f, shown, total }) {
     </div>
   );
 }
-const PLATFORM_LABELS = { coursera: 'Coursera', coursera_cin: 'Coursera CIN', coursera_dummies: 'Courses for Dummies', futurelearn: 'FutureLearn', go1: 'Go1' };
+// ---------------- IBM courses on Coursera ----------------
+// Figures from each course's Analytics › Summary page (all time, all course versions),
+// read every night and stored in the database — the page only reads them back.
+const ibmMonthLabel = (m) => (m ? new Date(m + '-01T00:00:00Z').toLocaleDateString(undefined, { month: 'short', year: '2-digit', timeZone: 'UTC' }) : '');
+function exportIbmCsv(rows) {
+  const headers = ['Course on Coursera', 'Title (IBM list)', 'Professional Certificate', 'Batch', 'Level', 'Unique visitors', 'Enrolled', 'Started', 'Completed',
+    'Completion rate', 'Rating', 'Ratings', 'Written reviews', 'Enrolled this month', 'Enrolled last month', 'Read on', 'Summary page'];
+  const q = (v) => (v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+  const lines = rows.map((c) => [c.name, c.listTitle, c.certificate, c.batch, c.level, c.visitors, c.enrollments, c.starters, c.completions,
+    c.completionRate == null ? '' : (c.completionRate * 100).toFixed(1) + '%', c.rating ? Number(c.rating).toFixed(2) : '', c.ratings, c.reviews,
+    c.enrolledThisMonth, c.enrolledLastMonth, c.readAt ? c.readAt.slice(0, 10) : '', c.summaryUrl].map(q).join(','));
+  const blob = new Blob([[headers.join(','), ...lines].join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ibm-coursera-courses.csv'; a.click();
+}
+function IbmView({ data }) {
+  const rows = data.courses || [];
+  const [sort, setSort] = useState({ key: 'enrollments', dir: -1 });
+  const [q, setQ] = useState('');
+  const [cert, setCert] = useState('all');
+  const certs = useMemo(() => [...new Set(rows.map((c) => c.certificate).filter(Boolean))].sort(), [rows]);
+  const shown = useMemo(() => {
+    const t = q.trim().toLowerCase();
+    return rows.filter((c) => (cert === 'all' || c.certificate === cert)
+      && (!t || [c.name, c.listTitle, c.certificate, c.batch].some((v) => String(v || '').toLowerCase().includes(t))))
+      .sort((a, b) => (typeof a[sort.key] === 'string' || typeof b[sort.key] === 'string')
+        ? sort.dir * String(a[sort.key] || '').localeCompare(String(b[sort.key] || ''))
+        : sort.dir * ((Number(a[sort.key]) || 0) - (Number(b[sort.key]) || 0)));
+  }, [rows, q, cert, sort]);
+  const head = <Header crumb="COURSES · IBM" title="IBM courses on Coursera" sub="From each course's Coursera Analytics › Summary page — all time, all course versions" actions={rows.length ? <button className="btn btn-secondary" onClick={() => exportIbmCsv(shown)}>⬇ Export CSV</button> : null} />;
+  if (!rows.length) return (<>{head}<div className="table-card"><div style={{ padding: 24 }} className="muted">No IBM course figures stored yet. They are read every night from Coursera; the list of IBM courses comes from the IBM monthly report.</div></div></>);
+  const sum = (k) => shown.reduce((s, c) => s + (c[k] || 0), 0);
+  const totE = sum('enrollments'), totC = sum('completions'), totS = sum('starters'), totV = sum('visitors');
+  const rated = shown.filter((c) => c.ratings);
+  const nRatings = rated.reduce((s, c) => s + c.ratings, 0);
+  const avgR = nRatings ? rated.reduce((s, c) => s + c.rating * c.ratings, 0) / nRatings : null;
+  const thisM = sum('enrolledThisMonth'), lastM = sum('enrolledLastMonth');
+  const allMonths = data.months || [];
+  const firstLive = allMonths.findIndex((m) => m.enrollments > 0);
+  const months = (firstLive < 0 ? [] : allMonths.slice(firstLive)).slice(-12);   // from the first month with enrolments
+  const pct = (v) => (v == null ? '—' : (v * 100).toFixed(1) + '%');
+  const th = (key, label, align = 'right') => <th key={key} style={{ textAlign: align }} onClick={() => setSort((s) => ({ key, dir: s.key === key ? -s.dir : -1 }))}>{label}{sort.key === key ? (sort.dir < 0 ? ' ↓' : ' ↑') : ''}</th>;
+  const readNote = data.scrapedAt ? `Read from Coursera ${relTime(data.scrapedAt)}${data.oldestRead && data.oldestRead.slice(0, 10) !== data.scrapedAt.slice(0, 10) ? ` (oldest ${relTime(data.oldestRead)})` : ''}` : '';
+  return (
+    <>
+      {head}
+      <div className="kpi-grid">
+        <Kpi icon="📚" bg="#cce5ff" fg="#0066cc" label="Courses" value={num(shown.length)} trend={cert === 'all' ? `${certs.length} Professional Certificates` : cert} />
+        <Kpi icon="👥" bg="#cce5ff" fg="#0066cc" label="Enrolled" value={num(totE)} trend={`${num(thisM)} this month · ${num(lastM)} in ${ibmMonthLabel(data.lastMonth)}`} />
+        <Kpi icon="▶️" bg="#ede9fe" fg="#7c3aed" label="Started" value={num(totS)} trend={`${totE ? Math.round((totS / totE) * 100) : 0}% of enrolled`} />
+        <Kpi icon="🎓" bg="#dcfce7" fg="#10b981" label="Completed" value={num(totC)} trend={`${pct(totE ? totC / totE : null)} completion rate`} />
+        <Kpi icon="⭐" bg="#fef3c7" fg="#f59e0b" label="Avg Rating" value={avgR ? avgR.toFixed(2) : '—'} trend={`${num(nRatings)} ratings · ${num(sum('reviews'))} written reviews`} />
+        <Kpi icon="👀" bg="#e0f2fe" fg="#0284c7" label="Unique visitors" value={num(totV)} trend={`${totV ? Math.round((totE / totV) * 100) : 0}% enrolled`} />
+      </div>
+      <div className="charts-grid">
+        <div className="chart-card"><h3>Enrolled by course</h3><BarChart data={[...shown].sort((a, b) => (b.enrollments || 0) - (a.enrollments || 0)).map((c) => ({ label: c.name, value: c.enrollments || 0 }))} /></div>
+        <div className="chart-card"><h3>New enrolments per month (all IBM courses)</h3>{months.length > 1 ? <LineChart data={months.map((m) => ({ label: ibmMonthLabel(m.month), value: m.enrollments }))} /> : <ChartPlaceholder />}</div>
+      </div>
+      <div className="table-card">
+        <div className="table-header">
+          <input className="table-search" placeholder="Search course, certificate or batch…" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setQ(''); }} />
+          <select className="table-search" style={{ maxWidth: 300 }} value={cert} onChange={(e) => setCert(e.target.value)}>
+            <option value="all">All Professional Certificates</option>
+            {certs.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <span className="muted">{shown.length === rows.length ? `${rows.length} courses` : `${shown.length} of ${rows.length}`}{readNote ? ` · ${readNote}` : ''}</span>
+        </div>
+        <div className="table-scroll"><table>
+          <thead><tr>{th('name', 'Course', 'left')}{th('certificate', 'Professional Certificate', 'left')}{th('batch', 'Batch', 'left')}{th('visitors', 'Visitors')}{th('enrollments', 'Enrolled')}{th('starters', 'Started')}{th('completions', 'Completed')}{th('completionRate', 'Compl. Rate')}{th('rating', 'Rating')}{th('reviews', 'Reviews')}{th('enrolledThisMonth', 'This month')}{th('enrolledLastMonth', 'Last month')}<th className="no-sort">Coursera</th></tr></thead>
+          <tbody>
+            {shown.map((c) => (
+              <tr key={c.slug}>
+                <td style={{ fontWeight: 500, minWidth: 260 }}>{c.name}{c.listTitle && c.listTitle !== c.name ? <div className="muted" style={{ fontSize: 12, fontWeight: 400 }}>IBM list: {c.listTitle}</div> : null}</td>
+                <td className="muted" style={{ fontSize: 13 }}>{c.certificate || '—'}</td>
+                <td className="muted" style={{ fontSize: 13 }}>{(c.batch || '').replace(/^IBM - /, '') || '—'}</td>
+                <td style={{ textAlign: 'right' }}>{num(c.visitors)}</td>
+                <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(c.enrollments)}</td>
+                <td style={{ textAlign: 'right' }}>{num(c.starters)}</td>
+                <td style={{ textAlign: 'right' }}>{num(c.completions)}</td>
+                <td style={{ textAlign: 'right' }}>{pct(c.completionRate)}</td>
+                <td style={{ textAlign: 'right' }}>{c.ratings ? <>{Number(c.rating).toFixed(2)} <span className="muted" style={{ fontSize: 12 }}>({c.ratings})</span></> : '—'}</td>
+                <td style={{ textAlign: 'right' }}>{num(c.reviews)}</td>
+                <td style={{ textAlign: 'right' }}>{num(c.enrolledThisMonth)}</td>
+                <td style={{ textAlign: 'right' }}>{num(c.enrolledLastMonth)}</td>
+                <td style={{ whiteSpace: 'nowrap', fontSize: 13 }}><a href={c.summaryUrl} target="_blank" rel="noreferrer">Analytics ↗</a> · <a href={c.url} target="_blank" rel="noreferrer">Page ↗</a></td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
+      </div>
+    </>
+  );
+}
+
+const PLATFORM_LABELS = { coursera: 'Coursera', coursera_cin: 'Coursera CIN', coursera_dummies: 'Courses for Dummies', coursera_ibm: 'IBM', futurelearn: 'FutureLearn', go1: 'Go1' };
 function PlatformUnavailable({ title, note, platform }) {
   return (
     <>
