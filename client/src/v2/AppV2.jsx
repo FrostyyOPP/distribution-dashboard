@@ -594,8 +594,8 @@ function exportIbmCsv(rows) {
   const lines = rows.map((c) => [c.name, c.listTitle, c.certificate, c.batch, c.level, c.visitors, c.enrollments, c.starters, c.completions,
     c.completionRate == null ? '' : (c.completionRate * 100).toFixed(1) + '%', c.rating ? Number(c.rating).toFixed(2) : '', c.ratings, c.reviews,
     c.enrolledThisMonth, c.enrolledLastMonth, c.readAt ? c.readAt.slice(0, 10) : '', c.summaryUrl].map(q).join(','));
-  const blob = new Blob([[headers.join(','), ...lines].join('\n')], { type: 'text/csv' });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ibm-coursera-courses.csv'; a.click();
+  const blob = new Blob(['\ufeff' + [headers.join(','), ...lines].join('\n')], { type: 'text/csv;charset=utf-8' });   // BOM so Excel reads it as UTF-8
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `IBM Coursera courses ${new Date().toISOString().slice(0, 10)}.csv`; a.click();
 }
 function IbmView({ data }) {
   const rows = data.courses || [];
@@ -611,7 +611,7 @@ function IbmView({ data }) {
         ? sort.dir * String(a[sort.key] || '').localeCompare(String(b[sort.key] || ''))
         : sort.dir * ((Number(a[sort.key]) || 0) - (Number(b[sort.key]) || 0)));
   }, [rows, q, cert, sort]);
-  const head = <Header crumb="COURSES · IBM" title="IBM courses on Coursera" sub="From each course's Coursera Analytics › Summary page — all time, all course versions" actions={rows.length ? <button className="btn btn-secondary" onClick={() => exportIbmCsv(shown)}>⬇ Export CSV</button> : null} />;
+  const head = <Header crumb="COURSES · IBM" title="IBM courses on Coursera" sub="From each course's Coursera Analytics › Summary page — all time, all course versions" />;
   if (!rows.length) return (<>{head}<div className="table-card"><div style={{ padding: 24 }} className="muted">No IBM course figures stored yet. They are read every night from Coursera; the list of IBM courses comes from the IBM monthly report.</div></div></>);
   const sum = (k) => shown.reduce((s, c) => s + (c[k] || 0), 0);
   const totE = sum('enrollments'), totC = sum('completions'), totS = sum('starters'), totV = sum('visitors');
@@ -647,6 +647,8 @@ function IbmView({ data }) {
             <option value="all">All Professional Certificates</option>
             {certs.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
+          <button className="btn btn-secondary" style={{ whiteSpace: 'nowrap' }} title="Download every column below as a CSV (opens in Excel) — follows the search and certificate filter"
+            onClick={() => exportIbmCsv(shown)}>⬇ Export {shown.length === rows.length ? 'all' : shown.length} IBM courses</button>
           <span className="muted">{shown.length === rows.length ? `${rows.length} courses` : `${shown.length} of ${rows.length}`}{readNote ? ` · ${readNote}` : ''}</span>
         </div>
         <div className="table-scroll"><table>
