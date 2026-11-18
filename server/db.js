@@ -413,6 +413,26 @@ db.exec(`
     PRIMARY KEY (catalog, slug)
   );
 
+  -- Each Coursera course's own Analytics › Summary page (scrapeCourseraSummary.js): THE
+  -- source for every Coursera course's enrollments, completions, completion rate and
+  -- rating since 2026-11-17 (laid over the three Coursera tables by applyCourseSummary).
+  CREATE TABLE IF NOT EXISTS coursera_course_summary (
+    slug TEXT PRIMARY KEY,
+    course_name TEXT,
+    catalogs TEXT,                     -- 'starweaver', 'cin', 'dummies', 'ibm' (comma list)
+    visitors INTEGER, enrollments INTEGER, starters INTEGER, completions INTEGER,
+    completion_rate REAL,              -- completions / enrollments
+    ratings INTEGER, rating_sum REAL, rating REAL, reviews INTEGER,
+    categories TEXT,                   -- JSON: enrollments by category
+    captured_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS coursera_course_summary_monthly (
+    slug TEXT NOT NULL, month TEXT NOT NULL,          -- 'YYYY-MM'
+    visitors INTEGER, enrollments INTEGER, starters INTEGER, completions INTEGER,
+    captured_at TEXT NOT NULL,
+    PRIMARY KEY (slug, month)
+  );
+
   CREATE TABLE IF NOT EXISTS udemy_course_daily (
     date TEXT NOT NULL,                -- 'YYYY-MM-DD' (IST)
     course_id TEXT NOT NULL,
@@ -1106,7 +1126,7 @@ export function writeCourseraMetrics(courses) {
     ),
     { job: 'coursera_metrics' }
   );
-  applyCourseLevelCompletion();
+  applyCourseSummary();
   return result;
 }
 // --- Coursera completion rate per course (from each course's analytics page) ---
@@ -1136,6 +1156,38 @@ export function applyCourseLevelCompletion() {
       completion_rate = (SELECT completion_rate FROM coursera_course_completion cc WHERE cc.catalog = 'dummies' AND cc.slug = coursera_dummies_courses.slug),
       completions = (SELECT completed FROM coursera_course_completion cc WHERE cc.catalog = 'dummies' AND cc.slug = coursera_dummies_courses.slug)
     WHERE EXISTS (SELECT 1 FROM coursera_course_completion cc WHERE cc.catalog = 'dummies' AND cc.slug = coursera_dummies_courses.slug);
+  `);
+}
+
+// --- Coursera course Summary page (scrapeCourseraSummary.js) ---
+const summaryStmt = db.prepare(`INSERT OR REPLACE INTO coursera_course_summary
+  (slug, course_name, catalogs, visitors, enrollments, starters, completions, completion_rate, ratings, rating_sum, rating, reviews, categories, captured_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+const summaryMonthStmt = db.prepare(`INSERT OR REPLACE INTO coursera_course_summary_monthly
+  (slug, month, visitors, enrollments, starters, completions, captured_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+export const writeCourseSummary = db.transaction((r) => {
+  const ts = nowIso();
+  summaryStmt.run(r.slug, r.name ?? null, (r.catalogs || []).join(','), r.visitors, r.enrollments, r.starters, r.completions,
+    r.completionRate ?? null, r.ratings, r.ratingSum ?? null, r.rating ?? null, r.reviews, JSON.stringify(r.categories || {}), ts);
+  for (const m of r.monthly || []) summaryMonthStmt.run(r.slug, m.month, m.visitors, m.enrollments, m.starters, m.completions, ts);
+});
+// Lays each course's Summary-page figures over the three Coursera tables: enrollments,
+// completions, completion rate (completions ÷ enrollments) and rating. Courses without a
+// Summary reading (no analytics access) keep what their own scraper wrote. Called after
+// the Summary scraper and after every rewrite of the three tables, so the daily scrapes
+// never undo it.
+export function applyCourseSummary() {
+  db.exec(`
+    UPDATE coursera_metrics SET
+      enrollments = cs.enrollments, completions = cs.completions, completion_rate = cs.completion_rate, rating = cs.rating
+    FROM coursera_course_summary cs JOIN coursera_course_status s ON s.slug = cs.slug
+    WHERE trim(s.course_name) = trim(coursera_metrics.course_name);
+    UPDATE coursera_cin_metrics SET
+      enrollments = cs.enrollments, completions = cs.completions, completion_rate = cs.completion_rate, rating = cs.rating
+    FROM coursera_course_summary cs WHERE cs.slug = coursera_cin_metrics.slug;
+    UPDATE coursera_dummies_courses SET
+      enrollments = cs.enrollments, completions = cs.completions, completion_rate = cs.completion_rate, rating = cs.rating
+    FROM coursera_course_summary cs WHERE cs.slug = coursera_dummies_courses.slug;
   `);
 }
 
@@ -1517,7 +1569,7 @@ export function writeCourseraCinMetrics(courses) {
     ),
     { job: 'coursera_cin_metrics' }
   );
-  applyCourseLevelCompletion();
+  applyCourseSummary();
   return result;
 }
 export function readCourseraCinMetrics() {
@@ -1586,6 +1638,39 @@ export function writeFutureLearnEnrollment(perSlug) {
     { job: 'futurelearn_enrollment' }
   );
 }
+// --- FutureLearn per-run admin stats (Stats dashboard › Course Measures) ---------
+// One row per course run, from /admin/courses/<slug>/<run>/stats-dashboard/overview.
+// A course's enrollment on the dashboard = the sum of its runs' Joiners.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS futurelearn_run_stats (
+    slug TEXT NOT NULL,
+    run INTEGER NOT NULL,
+    run_label TEXT,                 -- e.g. "18 May 2026"
+    accurate_to TEXT,               -- "Accurate up to midnight on …" (UTC date, YYYY-MM-DD)
+    joiners INTEGER, leavers INTEGER, learners INTEGER, active_learners INTEGER, returning_learners INTEGER,
+    social_learners INTEGER, completed_50 INTEGER, completed_90 INTEGER, retention_index REAL,
+    sold INTEGER, revenue_gbp REAL, unlimited_learners INTEGER,
+    captured_at TEXT NOT NULL,
+    PRIMARY KEY (slug, run)
+  );
+`);
+const upsertFlRunStmt = db.prepare(
+  `INSERT INTO futurelearn_run_stats (slug, run, run_label, accurate_to, joiners, leavers, learners, active_learners, returning_learners,
+     social_learners, completed_50, completed_90, retention_index, sold, revenue_gbp, unlimited_learners, captured_at)
+   VALUES (@slug, @run, @run_label, @accurate_to, @joiners, @leavers, @learners, @active_learners, @returning_learners,
+     @social_learners, @completed_50, @completed_90, @retention_index, @sold, @revenue_gbp, @unlimited_learners, @captured_at)
+   ON CONFLICT(slug, run) DO UPDATE SET run_label = excluded.run_label, accurate_to = excluded.accurate_to, joiners = excluded.joiners,
+     leavers = excluded.leavers, learners = excluded.learners, active_learners = excluded.active_learners,
+     returning_learners = excluded.returning_learners, social_learners = excluded.social_learners,
+     completed_50 = excluded.completed_50, completed_90 = excluded.completed_90, retention_index = excluded.retention_index,
+     sold = excluded.sold, revenue_gbp = excluded.revenue_gbp, unlimited_learners = excluded.unlimited_learners,
+     captured_at = excluded.captured_at`
+);
+export const writeFutureLearnRunStats = db.transaction((row) => upsertFlRunStmt.run({ ...row, captured_at: nowIso() }));
+export function readFutureLearnRunStats() {
+  return db.prepare('SELECT * FROM futurelearn_run_stats').all();
+}
+
 export function readFutureLearnCourses() {
   const courses = db.prepare('SELECT * FROM futurelearn_courses').all().map((r) => ({
     slug: r.slug, title: r.title, code: r.code, category: r.category, status: r.status,
@@ -1615,7 +1700,7 @@ export function writeCourseraDummiesCourses(courses) {
       c.launchDate ?? null, c.enrollments ?? null, c.completions ?? null, c.completionRate ?? null, c.rating ?? null, ts),
     { job: 'coursera_dummies_courses' }
   );
-  applyCourseLevelCompletion();
+  applyCourseSummary();
   return result;
 }
 export function readCourseraDummiesCourses() {

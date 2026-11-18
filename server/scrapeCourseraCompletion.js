@@ -1,3 +1,8 @@
+// RETIRED 2026-11-17 — no longer in the daily update. The dashboard's Coursera figures now
+// come from each course's Analytics › Summary page (scrapeCourseraSummary.js); this
+// Progress Funnel reading counts only eligible learners who enrolled in the last year.
+// Kept for one-off checks; running it no longer changes the dashboard's figures.
+//
 // Per-course Coursera completion rate, read from each course's OWN analytics page
 // (Analytics › Progress Funnel › "Course Level Metrics": Completion Rate
 // (Completed/Enrollment)) rather than the partner-wide Looker table that
@@ -22,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { chromium } from 'playwright';
 import { parkWindow } from './browserWindow.js';
-import { db, writeCourseLevelCompletion, applyCourseLevelCompletion, logScrapeRun } from './db.js';
+import { db, writeCourseLevelCompletion, applyCourseSummary, logScrapeRun } from './db.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AUTH_FILE = join(__dirname, 'coursera-auth.json');
@@ -63,7 +68,7 @@ const stale = courses.filter((c) => FORCE || ONLY || !(last.get(`${c.catalog}/${
   .sort((a, b) => (last.get(`${a.catalog}/${a.slug}`) || '').localeCompare(last.get(`${b.catalog}/${b.slug}`) || ''));
 const todo = [...stale.filter((c) => c.catalog === 'dummies'), ...stale.filter((c) => c.catalog !== 'dummies').slice(0, MAX)];
 console.log(`${courses.length} launched courses · ${stale.length} due (6 days; Dummies daily) · reading ${todo.length} now`);
-if (!todo.length) { applyCourseLevelCompletion(); process.exit(0); }
+if (!todo.length) { applyCourseSummary(); process.exit(0); }
 
 const browser = await chromium.launch({ headless: false, args: ['--disable-blink-features=AutomationControlled'], ignoreDefaultArgs: ['--enable-automation'] });
 const ctx = await browser.newContext({ storageState: AUTH_FILE, userAgent: UA, viewport: { width: 1400, height: 1000 } });
@@ -157,7 +162,7 @@ for (const [k, c] of todo.entries()) {
 }
 await browser.close();
 
-if (!DRY) applyCourseLevelCompletion();
+if (!DRY) applyCourseSummary();
 // A run fails when many pages fail (a dead session), not when one stubborn page does.
 const okRun = failed <= Math.max(3, 0.2 * todo.length);
 if (!DRY) logScrapeRun({ job: 'coursera_course_completion', ok: okRun, rows: ok + empty + locked, startedAt, error: okRun ? null : `${failed} course page(s) failed` });

@@ -15,17 +15,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLAN = process.argv.includes('--plan');
 
 // Datasets that change day to day. Each entry is [label, script file, platform].
-// Enrollment is slow (~15 min, public pages) — run it manually/weekly instead.
 const STEPS = [
   ['Udemy revenue', 'scrapeRevenue.js', 'udemy'],
   ['Udemy coupons', 'scrapeCoupons.js', 'udemy'],
   ['Udemy captions', 'scrapeCaptions.js', 'udemy'],
   // Minutes watched and enrollment were never scheduled at all, so both went
-  // stale however the Udemy switch was set. --force on enrollment, because
-  // without it the scraper restamps cached counts as fresh without re-reading
-  // them.
+  // stale however the Udemy switch was set. Since 2026-11-18 enrollment is the
+  // instructor's own student count per course (api-2.0 taught-courses), not the
+  // public course pages — one quick read of all 200 courses.
   ['Udemy minutes watched', 'scrapeEngagement.js', 'udemy'],
-  ['Udemy enrollment', 'scrapeEnrollment.js', 'udemy', ['--force']],
+  ['Udemy enrollment', 'scrapeEnrollment.js', 'udemy'],
   // Every review (stars + date) and today's rating / students / UFB per course,
   // kept as history — Udemy ratings were never stored before 2026-10-26. Uses
   // the API key, not the browser login, so it runs even if that has expired.
@@ -47,18 +46,15 @@ const STEPS = [
   ['Coursera instructors', 'scrapeCourseraInstructors.js', 'coursera', [], { everyDays: 7, table: 'coursera_course_instructors' }],
   ['Coursera instructor profiles', 'scrapeCourseraInstructorProfiles.js', 'coursera', [], { everyDays: 7, table: 'coursera_instructor_profiles' }],
   ['Coursera course items', 'scrapeCourseraCourseItems.js', 'coursera', [], { everyDays: 7, table: 'coursera_course_items' }],
-  // Completion rate from each course's own analytics page (all three catalogues).
-  // ~10 s a course, so each day reads the 90 stalest (~15 min): every course is
-  // re-read about once a week without one morning taking 1.5 hours.
-  ['Coursera completion rate (per course)', 'scrapeCourseraCompletion.js', 'coursera', ['--max=90']],
   // The other three platforms, each skipped on its own if its session is
   // missing. Until 2026-09-24 none of them ran on a schedule at all: Go1 was 72
   // days old, FutureLearn 10 and LinkedIn 9, with nothing on screen saying so.
   // Placed before the CIN metrics step, which is slow and deliberately last.
   ['FutureLearn courses', 'scrapeFutureLearnCourses.js', 'futurelearn'],
-  // --force: without it the scraper only visits courses that have no number
-  // yet, so a course's enrollment, once read, would never be refreshed.
-  ['FutureLearn enrollment', 'scrapeFutureLearnEnrollment.js', 'futurelearn', ['--force']],
+  // Since 2026-11-18: each run's admin Stats dashboard (joiners, learners,
+  // completions, sales), not the public course pages. Runs read in the last 20 h,
+  // and finished runs whose stats stopped updating, are skipped on their own.
+  ['FutureLearn enrollment', 'scrapeFutureLearnEnrollment.js', 'futurelearn'],
   ['LinkedIn courses', 'scrapeLinkedInCourses.js', 'linkedin'],
   // The catalogue first: every live Go1 course with its language and link.
   // The two after it are activity (who studied what, per month).
@@ -75,6 +71,13 @@ const STEPS = [
   // data). Deliberately last so every faster step still completes even if
   // this one runs long or gets interrupted.
   ['Coursera CIN metrics', 'scrapeCourseraCinMetrics.js', 'coursera'],
+  // THE source for every Coursera course's enrollments, completions, completion rate and
+  // rating (Starweaver, CIN, Dummies, IBM) since 2026-11-17, at the user's request: each
+  // course's own Analytics › Summary page. It replaced the Progress Funnel step, whose
+  // figures counted only eligible learners. Laid over the tables the steps above write
+  // (applyCourseSummary). Last, because it opens one page per course; an interrupted run
+  // resumes with the stalest courses.
+  ['Coursera course Summary pages', 'scrapeCourseraSummary.js', 'coursera'],
 ];
 
 // Udemy scraping is switched OFF (2026-08-13, at the user's request). The daily
