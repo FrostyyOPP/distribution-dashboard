@@ -587,32 +587,38 @@ function ActiveFilter({ f, shown, total }) {
 // Figures from each course's Analytics › Summary page (all time, all course versions),
 // read every night and stored in the database — the page only reads them back.
 const ibmMonthLabel = (m) => (m ? new Date(m + '-01T00:00:00Z').toLocaleDateString(undefined, { month: 'short', year: '2-digit', timeZone: 'UTC' }) : '');
-function exportIbmCsv(rows) {
-  const headers = ['Course on Coursera', 'Title (IBM list)', 'Professional Certificate', 'Batch', 'Level', 'Unique visitors', 'Enrolled', 'Started', 'Completed',
-    'Completion rate', 'Rating', 'Ratings', 'Written reviews', 'Enrolled this month', 'Enrolled last month', 'Read on', 'Summary page'];
-  const q = (v) => (v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
-  const lines = rows.map((c) => [c.name, c.listTitle, c.certificate, c.batch, c.level, c.visitors, c.enrollments, c.starters, c.completions,
-    c.completionRate == null ? '' : (c.completionRate * 100).toFixed(1) + '%', c.rating ? Number(c.rating).toFixed(2) : '', c.ratings, c.reviews,
-    c.enrolledThisMonth, c.enrolledLastMonth, c.readAt ? c.readAt.slice(0, 10) : '', c.summaryUrl].map(q).join(','));
-  const blob = new Blob(['\ufeff' + [headers.join(','), ...lines].join('\n')], { type: 'text/csv;charset=utf-8' });   // BOM so Excel reads it as UTF-8
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `IBM Coursera courses ${new Date().toISOString().slice(0, 10)}.csv`; a.click();
-}
+// Row colour per certificate, as in the IBM report (light enough for both themes).
+const IBM_BAND = {
+  'ibm-management-consultant': 'rgba(242, 220, 219, .55)',
+  'ibm-sales-representative': 'rgba(197, 217, 241, .55)',
+  'ibm-business-process-automation-with-ai-assistants': 'rgba(235, 241, 222, .7)',
+  'ibm-building-and-managing-agentic-teams': 'rgba(149, 179, 215, .45)',
+};
+// A course run in sessions: Coursera's default (eligible-learner) funnel counts only the learners
+// who already finished (100% / 0% / 0%), so the all-learners figures are shown — in italics.
+const ibmFunnel = (c) => (c.sessionCourse
+  ? { rate: c.allCompletionRate, before: c.allDropBeforeM1, after: c.allDropAfterM1, all: true }
+  : { rate: c.funnelCompletionRate, before: c.dropBeforeM1, after: c.dropAfterM1, all: false });
 function IbmView({ data }) {
   const rows = data.courses || [];
-  const [sort, setSort] = useState({ key: 'enrollments', dir: -1 });
+  const [sort, setSort] = useState(null);           // null = certificate order (C1, C2, …), as in the IBM report
   const [q, setQ] = useState('');
   const [cert, setCert] = useState('all');
-  const certs = useMemo(() => [...new Set(rows.map((c) => c.certificate).filter(Boolean))].sort(), [rows]);
+  const [listOnly, setListOnly] = useState(false);
+  const certs = useMemo(() => [...new Set(rows.map((c) => c.certificate).filter(Boolean))], [rows]);
+  const val = (c, k) => (k === 'change' ? (c.enrollments != null && c.enrolledEndLastMonth != null ? c.enrollments - c.enrolledEndLastMonth : null)
+    : k === 'frate' ? ibmFunnel(c).rate : k === 'fbefore' ? ibmFunnel(c).before : k === 'fafter' ? ibmFunnel(c).after : c[k]);
   const shown = useMemo(() => {
     const t = q.trim().toLowerCase();
-    return rows.filter((c) => (cert === 'all' || c.certificate === cert)
-      && (!t || [c.name, c.listTitle, c.certificate, c.batch].some((v) => String(v || '').toLowerCase().includes(t))))
-      .sort((a, b) => (typeof a[sort.key] === 'string' || typeof b[sort.key] === 'string')
-        ? sort.dir * String(a[sort.key] || '').localeCompare(String(b[sort.key] || ''))
-        : sort.dir * ((Number(a[sort.key]) || 0) - (Number(b[sort.key]) || 0)));
-  }, [rows, q, cert, sort]);
-  const head = <Header crumb="COURSES · IBM" title="IBM courses on Coursera" sub="From each course's Coursera Analytics › Summary page — all time, all course versions" />;
-  if (!rows.length) return (<>{head}<div className="table-card"><div style={{ padding: 24 }} className="muted">No IBM course figures stored yet. They are read every night from Coursera; the list of IBM courses comes from the IBM monthly report.</div></div></>);
+    const f = rows.filter((c) => (cert === 'all' || c.certificate === cert) && (!listOnly || c.inList)
+      && (!t || [c.name, c.listTitle, c.certificate, c.batch].some((v) => String(v || '').toLowerCase().includes(t))));
+    if (!sort) return f;
+    return [...f].sort((a, b) => (typeof val(a, sort.key) === 'string' || typeof val(b, sort.key) === 'string')
+      ? sort.dir * String(val(a, sort.key) || '').localeCompare(String(val(b, sort.key) || ''))
+      : sort.dir * ((Number(val(a, sort.key)) || 0) - (Number(val(b, sort.key)) || 0)));
+  }, [rows, q, cert, listOnly, sort]);
+  const head = <Header crumb="COURSES · IBM" title="IBM courses on Coursera" sub="Every course of the IBM Professional Certificates — enrolments and rating from each course's Analytics › Summary page, completion and drop-off from its Progress Funnel" />;
+  if (!rows.length) return (<>{head}<div className="table-card"><div style={{ padding: 24 }} className="muted">No IBM course figures stored yet. They are read every night from Coursera.</div></div></>);
   const sum = (k) => shown.reduce((s, c) => s + (c[k] || 0), 0);
   const totE = sum('enrollments'), totC = sum('completions'), totS = sum('starters'), totV = sum('visitors');
   const rated = shown.filter((c) => c.ratings);
@@ -623,8 +629,12 @@ function IbmView({ data }) {
   const firstLive = allMonths.findIndex((m) => m.enrollments > 0);
   const months = (firstLive < 0 ? [] : allMonths.slice(firstLive)).slice(-12);   // from the first month with enrolments
   const pct = (v) => (v == null ? '—' : (v * 100).toFixed(1) + '%');
-  const th = (key, label, align = 'right') => <th key={key} style={{ textAlign: align }} onClick={() => setSort((s) => ({ key, dir: s.key === key ? -s.dir : -1 }))}>{label}{sort.key === key ? (sort.dir < 0 ? ' ↓' : ' ↑') : ''}</th>;
-  const readNote = data.scrapedAt ? `Read from Coursera ${relTime(data.scrapedAt)}${data.oldestRead && data.oldestRead.slice(0, 10) !== data.scrapedAt.slice(0, 10) ? ` (oldest ${relTime(data.oldestRead)})` : ''}` : '';
+  const mon = (m) => (m ? new Date(m + '-01T00:00:00Z').toLocaleDateString(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' }) : '');
+  const th = (key, label, align = 'right', extra = {}) => <th key={key} style={{ textAlign: align, ...extra }} onClick={() => setSort((s) => (s?.key === key ? (s.dir < 0 ? { key, dir: 1 } : null) : { key, dir: -1 }))}>{label}{sort?.key === key ? (sort.dir < 0 ? ' ↓' : ' ↑') : ''}</th>;
+  const readNote = data.scrapedAt ? `Read from Coursera ${relTime(data.scrapedAt)}${data.funnelReadAt ? ` · funnel ${relTime(data.funnelReadAt)}` : ''}` : '';
+  const sessions = shown.filter((c) => c.sessionCourse).length;
+  const exportHref = '/api/coursera-ibm/export.xlsx' + (cert !== 'all' ? `?certificate=${encodeURIComponent(cert)}` : '');
+  const sky = { background: 'rgba(93, 173, 226, .18)' };
   return (
     <>
       {head}
@@ -632,47 +642,69 @@ function IbmView({ data }) {
         <Kpi icon="📚" bg="#cce5ff" fg="#0066cc" label="Courses" value={num(shown.length)} trend={cert === 'all' ? `${certs.length} Professional Certificates` : cert} />
         <Kpi icon="👥" bg="#cce5ff" fg="#0066cc" label="Enrolled" value={num(totE)} trend={`${num(thisM)} this month · ${num(lastM)} in ${ibmMonthLabel(data.lastMonth)}`} />
         <Kpi icon="▶️" bg="#ede9fe" fg="#7c3aed" label="Started" value={num(totS)} trend={`${totE ? Math.round((totS / totE) * 100) : 0}% of enrolled`} />
-        <Kpi icon="🎓" bg="#dcfce7" fg="#10b981" label="Completed" value={num(totC)} trend={`${pct(totE ? totC / totE : null)} completion rate`} />
+        <Kpi icon="🎓" bg="#dcfce7" fg="#10b981" label="Completed" value={num(totC)} trend={`${pct(totE ? totC / totE : null)} of all enrolled, all time`} />
         <Kpi icon="⭐" bg="#fef3c7" fg="#f59e0b" label="Avg Rating" value={avgR ? avgR.toFixed(2) : '—'} trend={`${num(nRatings)} ratings · ${num(sum('reviews'))} written reviews`} />
         <Kpi icon="👀" bg="#e0f2fe" fg="#0284c7" label="Unique visitors" value={num(totV)} trend={`${totV ? Math.round((totE / totV) * 100) : 0}% enrolled`} />
       </div>
       <div className="charts-grid">
         <div className="chart-card"><h3>Enrolled by course</h3><BarChart data={[...shown].sort((a, b) => (b.enrollments || 0) - (a.enrollments || 0)).map((c) => ({ label: c.name, value: c.enrollments || 0 }))} /></div>
-        <div className="chart-card"><h3>New enrolments per month (all IBM courses)</h3>{months.length > 1 ? <LineChart data={months.map((m) => ({ label: ibmMonthLabel(m.month), value: m.enrollments }))} /> : <ChartPlaceholder />}</div>
+        <div className="chart-card"><h3>New enrolments per month (courses on the IBM list)</h3>{months.length > 1 ? <LineChart data={months.map((m) => ({ label: ibmMonthLabel(m.month), value: m.enrollments }))} /> : <ChartPlaceholder />}</div>
       </div>
       <div className="table-card">
         <div className="table-header">
           <input className="table-search" placeholder="Search course, certificate or batch…" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setQ(''); }} />
-          <select className="table-search" style={{ maxWidth: 300 }} value={cert} onChange={(e) => setCert(e.target.value)}>
+          <select className="table-search" style={{ maxWidth: 320 }} value={cert} onChange={(e) => setCert(e.target.value)}>
             <option value="all">All Professional Certificates</option>
             {certs.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
-          <button className="btn btn-secondary" style={{ whiteSpace: 'nowrap' }} title="Download every column below as a CSV (opens in Excel) — follows the search and certificate filter"
-            onClick={() => exportIbmCsv(shown)}>⬇ Export {shown.length === rows.length ? 'all' : shown.length} IBM courses</button>
+          <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', fontSize: 13 }}>
+            <input type="checkbox" checked={listOnly} onChange={(e) => setListOnly(e.target.checked)} /> Only our IBM list
+          </label>
+          <a className="btn btn-secondary" style={{ whiteSpace: 'nowrap', textDecoration: 'none' }} href={exportHref}
+            title="Excel in the IBM report's layout (certificate colours, low ratings in red), plus a sheet with every figure">⬇ Export Excel{cert !== 'all' ? ' (this certificate)' : ''}</a>
           <span className="muted">{shown.length === rows.length ? `${rows.length} courses` : `${shown.length} of ${rows.length}`}{readNote ? ` · ${readNote}` : ''}</span>
         </div>
         <div className="table-scroll"><table>
-          <thead><tr>{th('name', 'Course', 'left')}{th('certificate', 'Professional Certificate', 'left')}{th('batch', 'Batch', 'left')}{th('visitors', 'Visitors')}{th('enrollments', 'Enrolled')}{th('starters', 'Started')}{th('completions', 'Completed')}{th('completionRate', 'Compl. Rate')}{th('rating', 'Rating')}{th('reviews', 'Reviews')}{th('enrolledThisMonth', 'This month')}{th('enrolledLastMonth', 'Last month')}<th className="no-sort">Coursera</th></tr></thead>
+          <thead><tr>
+            {th('certificate', 'Professional Certificate', 'left')}{th('courseNo', 'No.', 'left')}{th('name', 'Course title', 'left')}
+            {th('enrollments', `Enrollments ${mon(data.thisMonth)}`)}{th('enrolledEndLastMonth', `Enrollments ${mon(data.lastMonth)}`)}{th('change', 'Change vs last month')}{th('rating', 'Rating')}
+            {th('frate', 'Completion Rate', 'right', sky)}{th('fbefore', 'Drop-off before Module 1', 'right', sky)}{th('fafter', 'Drop-off after Module 1', 'right', sky)}
+            <th className="no-sort">Coursera</th>
+          </tr></thead>
           <tbody>
-            {shown.map((c) => (
-              <tr key={c.slug}>
-                <td style={{ fontWeight: 500, minWidth: 260 }}>{c.name}{c.listTitle && c.listTitle !== c.name ? <div className="muted" style={{ fontSize: 12, fontWeight: 400 }}>IBM list: {c.listTitle}</div> : null}</td>
-                <td className="muted" style={{ fontSize: 13 }}>{c.certificate || '—'}</td>
-                <td className="muted" style={{ fontSize: 13 }}>{(c.batch || '').replace(/^IBM - /, '') || '—'}</td>
-                <td style={{ textAlign: 'right' }}>{num(c.visitors)}</td>
-                <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(c.enrollments)}</td>
-                <td style={{ textAlign: 'right' }}>{num(c.starters)}</td>
-                <td style={{ textAlign: 'right' }}>{num(c.completions)}</td>
-                <td style={{ textAlign: 'right' }}>{pct(c.completionRate)}</td>
-                <td style={{ textAlign: 'right' }}>{c.ratings ? <>{Number(c.rating).toFixed(2)} <span className="muted" style={{ fontSize: 12 }}>({c.ratings})</span></> : '—'}</td>
-                <td style={{ textAlign: 'right' }}>{num(c.reviews)}</td>
-                <td style={{ textAlign: 'right' }}>{num(c.enrolledThisMonth)}</td>
-                <td style={{ textAlign: 'right' }}>{num(c.enrolledLastMonth)}</td>
-                <td style={{ whiteSpace: 'nowrap', fontSize: 13 }}><a href={c.summaryUrl} target="_blank" rel="noreferrer">Analytics ↗</a> · <a href={c.url} target="_blank" rel="noreferrer">Page ↗</a></td>
-              </tr>
-            ))}
+            {shown.map((c) => {
+              const fn = ibmFunnel(c);
+              const red = c.ratings && c.rating < 4;
+              const cell = { textAlign: 'right', ...(fn.all ? { fontStyle: 'italic' } : {}) };
+              const why = fn.all ? `All learners: most are still in a live session, so Coursera's default (eligible-learner) view counts only the ${c.funnelEnrolled ?? ''} who finished and shows ${pct(c.funnelCompletionRate)}.` : 'Progress Funnel, Coursera default view: eligible learners, last 1 year';
+              const change = val(c, 'change');
+              return (
+                <tr key={c.slug} style={{ background: IBM_BAND[c.certSlug] || 'transparent', color: red ? '#dc2626' : undefined }} title={red ? 'Rating below 4' : undefined}>
+                  <td style={{ fontSize: 13 }}>{c.certificate || '—'}</td>
+                  <td style={{ fontSize: 13 }}>{c.courseNo ? `C${c.courseNo}` : '—'}</td>
+                  <td style={{ fontWeight: 500, minWidth: 260 }}><a href={c.url} target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>{c.name}</a>{c.listTitle && c.listTitle !== c.name ? <div className="muted" style={{ fontSize: 12, fontWeight: 400 }}>IBM list: {c.listTitle}</div> : null}{!c.inList ? <div className="muted" style={{ fontSize: 11.5, fontWeight: 400 }}>other IBM course in the certificate</div> : null}</td>
+                  <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(c.enrollments)}</td>
+                  <td style={{ textAlign: 'right' }}>{num(c.enrolledEndLastMonth)}</td>
+                  <td style={{ textAlign: 'right' }}>{change == null ? '—' : num(change)}</td>
+                  <td style={{ textAlign: 'right' }}>{c.ratings ? <>{Number(c.rating).toFixed(2)} <span className="muted" style={{ fontSize: 12 }}>({c.ratings})</span></> : '—'}</td>
+                  {c.funnelNoAccess
+                    ? <td colSpan={3} className="muted" style={{ textAlign: 'center', fontSize: 13 }} title="Our Coursera login has no Analytics access to this course">no Analytics access</td>
+                    : <>
+                      <td style={{ ...cell, fontWeight: 600 }} title={why}>{pct(fn.rate)}{fn.all ? '*' : ''}</td>
+                      <td style={cell} title={why}>{pct(fn.before)}</td>
+                      <td style={cell} title={why}>{pct(fn.after)}</td>
+                    </>}
+                  <td style={{ whiteSpace: 'nowrap', fontSize: 13 }}><a href={c.summaryUrl} target="_blank" rel="noreferrer">Summary ↗</a> · <a href={c.funnelUrl} target="_blank" rel="noreferrer">Funnel ↗</a></td>
+                </tr>
+              );
+            })}
           </tbody>
         </table></div>
+        <div className="muted" style={{ padding: '12px 24px', fontSize: 12.5, lineHeight: 1.6 }}>
+          Enrollments: all time, all course versions ({mon(data.lastMonth)} = at the end of that month). Completion Rate and drop-off: Progress Funnel, Coursera's default view (eligible learners, last 1 year).
+          Drop-off before Module 1 = enrolled learners who never started Module 1; after Module 1 = of those who completed Module 1, the share who haven't completed the course. Red = rating below 4.
+          {sessions ? <> <b>*</b> Italic = all learners: {sessions} newer course{sessions > 1 ? 's' : ''} run in sessions, where Coursera's default view counts only learners who already finished (100%).</> : null}
+        </div>
       </div>
     </>
   );

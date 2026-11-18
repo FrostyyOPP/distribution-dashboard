@@ -77,6 +77,10 @@ const STEPS = [
   // figures counted only eligible learners. Laid over the tables the steps above write
   // (applyCourseSummary). Last, because it opens one page per course; an interrupted run
   // resumes with the stalest courses.
+  // IBM only (2026-11-18, user asked): the 22 courses of the four IBM Professional Certificates
+  // (their order C1, C2, … from Coursera's public API) and each one's Analytics › Progress Funnel:
+  // completion rate and learner drop-off before / after Module 1. ~8 min.
+  ['Coursera IBM progress funnel', 'scrapeCourseraFunnel.js', 'coursera'],
   ['Coursera course Summary pages', 'scrapeCourseraSummary.js', 'coursera'],
 ];
 
