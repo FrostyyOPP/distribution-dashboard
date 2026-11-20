@@ -1785,9 +1785,10 @@ export function readCourseraIbmCourses() {
   // come from the IBM list (ibm_coursera_monthly, latest month) where the course is on it.
   let listRows = [], certRows = [];
   try {
-    listRows = db.prepare(`SELECT slug, name, list_title, batch, status, certificate, level, launched, url,
-        enrollments, rating, ratings, reviews, visitors, starters, completions
-      FROM ibm_coursera_monthly WHERE kind = 'course' AND month = (SELECT MAX(month) FROM ibm_coursera_monthly)`).all();
+    // SELECT *: the IBM monthly script's table has no visitors/starters/completions columns; naming
+    // them failed the whole read (no batch / status / list title). Missing ones read as undefined → null.
+    listRows = db.prepare(`SELECT * FROM ibm_coursera_monthly
+      WHERE kind = 'course' AND month = (SELECT MAX(month) FROM ibm_coursera_monthly)`).all();
   } catch { /* no IBM table on this machine */ }
   try { certRows = db.prepare('SELECT * FROM ibm_certificate_courses WHERE slug IS NOT NULL ORDER BY cert_name, course_no').all(); } catch {}
   if (!listRows.length && !certRows.length) return { courses: [], months: [], scrapedAt: null };
@@ -1823,7 +1824,7 @@ export function readCourseraIbmCourses() {
       summaryUrl: `https://www.coursera.org/teach/${b.slug}/course/analytics/summary`,
       funnelUrl: `https://www.coursera.org/teach/${b.slug}/course/analytics/course-progress-funnel`,
       visitors: s?.visitors ?? r.visitors ?? null, enrollments, starters: s?.starters ?? r.starters ?? null, completions,
-      completionRate: s?.completion_rate ?? (enrollments ? completions / enrollments : null),
+      completionRate: s?.completion_rate ?? (enrollments && completions != null ? completions / enrollments : null),
       rating: s?.rating ?? r.rating ?? null, ratings: s?.ratings ?? r.ratings ?? null, reviews: s?.reviews ?? r.reviews ?? null,
       enrolledThisMonth, enrolledLastMonth: monthly.find((m) => m.month === lastMonth)?.enrollments ?? null,
       // enrolled at the end of last month (all time) = now − this month's new enrolments
