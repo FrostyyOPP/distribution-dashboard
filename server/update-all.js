@@ -65,6 +65,10 @@ const STEPS = [
   // from the console, completions and ratings from Looker once launched.
   ['Coursera — Courses for Dummies', 'scrapeCourseraDummies.js', 'coursera'],
   ['Coursera CIN courses', 'scrapeCourseraCinCourses.js', 'coursera'],
+  // Named instructors of every CIN course (the CIN tab's Instructor Names column).
+  // Coursera's public API, no login — so it runs even if the Coursera session has
+  // expired. Weekly: instructors rarely change.
+  ['Coursera CIN instructors', 'scrapeCourseraCinInstructors.js', 'coursera-public', [], { everyDays: 7, table: 'coursera_cin_instructors' }],
   // Slowest step by far (~30-50 min: visits all ~467 CIN course pages
   // individually — this account has no org-wide analytics dashboard access,
   // unlike Starweaver, so there's no fast batch source for its enrollment

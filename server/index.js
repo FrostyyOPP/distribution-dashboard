@@ -21,7 +21,7 @@ import {
   readCourseraRevenueQuarterly, readCourseraQuarterTotals,
   readCourseraCourseItems, searchCourseraItems, readCourseraInstructorProfiles,
   readBookmarks, addBookmark, removeBookmark,
-  readCourseraCinCourses, readCourseraCinMetrics, readCourseraCinOverview,
+  readCourseraCinCourses, readCourseraCinMetrics, readCourseraCinOverview, readCourseraCinInstructors,
   readFutureLearnCourses, readLinkedInCourses, readGo1Courses, readGo1Lifetime, readGo1Catalog, readCourseraDummiesCourses, readCourseraIbmCourses, readEngagement,
   readRevenueDashboard, readCourseRevenueAcrossPlatforms,
   readFreshness, readPlatformFreshness, rawQuery,
@@ -537,11 +537,13 @@ app.get('/api/coursera-cin/overview', (req, res) => {
 app.get('/api/coursera-cin/metrics', (req, res) => {
   const metrics = readCourseraCinMetrics();
   const { bySlug: revenueBySlug } = readCourseraRevenueImport();
+  const { bySlug: instructorsBySlug } = readCourseraCinInstructors();
   res.json({
     ...metrics,
     courses: metrics.courses.map((c) => {
       const revInfo = c.slug ? revenueBySlug[c.slug] : null;
-      return { ...c, revenue: revInfo?.revenue ?? null, revenueCompletions: revInfo?.completions ?? null };
+      return { ...c, revenue: revInfo?.revenue ?? null, revenueCompletions: revInfo?.completions ?? null,
+        instructorNames: (c.slug && instructorsBySlug[c.slug]) || [] };
     }),
   });
 });
@@ -872,7 +874,8 @@ const EXPORT_TABLES = [
   ['Coursera SW metrics', 'SELECT * FROM coursera_metrics'],
   ['Coursera SW status', 'SELECT * FROM coursera_course_status'],
   ['Coursera SW reviews', 'SELECT * FROM coursera_reviews'],
-  ['Coursera CIN metrics', 'SELECT * FROM coursera_cin_metrics'],
+  ['Coursera CIN metrics', `SELECT m.*, (SELECT group_concat(value, ', ') FROM json_each(i.instructor_names)) AS instructor_names
+     FROM coursera_cin_metrics m LEFT JOIN coursera_cin_instructors i ON i.slug = m.slug`],
   ['Coursera CIN reviews', 'SELECT * FROM coursera_cin_reviews'],
   ['Coursera revenue quarterly', 'SELECT * FROM coursera_revenue_quarterly'],
   ['Coursera instructors', 'SELECT * FROM coursera_instructor_profiles'],

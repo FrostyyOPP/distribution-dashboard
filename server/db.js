@@ -317,6 +317,18 @@ db.exec(`
     updated_at TEXT NOT NULL
   );
 
+  -- Coursera CIN instructors, one row per CIN course: the names on the course's
+  -- public page (Coursera's public courses/instructors API — no login, so the
+  -- shared-viewer mix-ups of the partner dashboards cannot happen). The shared
+  -- "Starweaver" account is not a person and is left out unless it is the only
+  -- name. Written by scrapeCourseraCinInstructors.js.
+  CREATE TABLE IF NOT EXISTS coursera_cin_instructors (
+    slug TEXT PRIMARY KEY,
+    course_name TEXT,
+    instructor_names TEXT,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS coursera_cin_metrics (
     slug TEXT PRIMARY KEY,
     course_name TEXT,
@@ -1259,6 +1271,26 @@ export function readCourseraCourseInstructors() {
   return { byName, scrapedAt };
 }
 
+// --- Coursera CIN instructors (guarded snapshot, keyed by slug) ------------
+const insertCourseraCinInstructorsStmt = db.prepare(
+  'INSERT INTO coursera_cin_instructors (slug, course_name, instructor_names, updated_at) VALUES (?, ?, ?, ?)'
+);
+export function writeCourseraCinInstructors(rows) {
+  const ts = nowIso();
+  return guardedReplaceAll(
+    'coursera_cin_instructors', rows,
+    (r) => insertCourseraCinInstructorsStmt.run(r.slug, r.courseName ?? null, JSON.stringify(r.instructorNames || []), ts),
+    { job: 'coursera_cin_instructors' }
+  );
+}
+export function readCourseraCinInstructors() {
+  const rows = db.prepare('SELECT slug, instructor_names FROM coursera_cin_instructors').all();
+  const scrapedAt = db.prepare('SELECT MAX(updated_at) AS t FROM coursera_cin_instructors').get().t;
+  const bySlug = {};
+  for (const r of rows) bySlug[r.slug] = JSON.parse(r.instructor_names || '[]').map((n) => (n || '').trim()).filter(Boolean);
+  return { bySlug, scrapedAt };
+}
+
 // --- Coursera course status + slug (merge — never wiped by the Looker-driven
 // coursera_metrics refresh, which has no slug of its own) ------------------
 const upsertCourseraCourseStatusStmt = db.prepare(
@@ -1932,7 +1964,7 @@ const ALL_TABLES = [
   'coupons', 'coupon_quota', 'udemy_real_course_ids', 'transcripts', 'coursera_courses', 'coursera_metrics', 'coursera_overview_kpis', 'coursera_course_instructors',
   'coursera_course_status', 'coursera_reviews', 'coursera_cin_reviews', 'coursera_revenue_import',
   'coursera_revenue_quarterly', 'coursera_course_items', 'coursera_instructor_profiles',
-  'coursera_cin_courses', 'coursera_cin_metrics', 'coursera_cin_overview_kpis', 'coursera_rating_history',
+  'coursera_cin_courses', 'coursera_cin_metrics', 'coursera_cin_overview_kpis', 'coursera_cin_instructors', 'coursera_rating_history',
   'linkedin_courses', 'linkedin_revenue', 'revenue_master',
   'futurelearn_courses', 'coursera_dummies_courses', 'go1_catalog', 'go1_courses', 'go1_course_history', 'engagement_course', 'engagement_monthly', 'engagement_meta', 'engagement_ub_monthly',
   'engagement_course_monthly', 'udemy_reviews', 'udemy_course_daily', 'coursera_course_completion',
