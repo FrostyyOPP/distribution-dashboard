@@ -16,7 +16,7 @@ import { gzipSync, gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import DatabaseCtor from 'better-sqlite3';
-import { EXCLUDED_CIN_SLUGS } from './courseraCinExclusions.js';
+import { cinBatchOf } from './courseraCinExclusions.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILE = process.env.DASHBOARD_DB_FILE || join(__dirname, 'dashboard.db');
@@ -1566,8 +1566,7 @@ export function writeCourseraCinReviews(reviews) {
   );
 }
 export function readCourseraCinReviews() {
-  const rows = db.prepare('SELECT slug, course_name, rating, review_text, reviewer_name, review_date FROM coursera_cin_reviews').all()
-    .filter((r) => !EXCLUDED_CIN_SLUGS.has(r.slug));
+  const rows = db.prepare('SELECT slug, course_name, rating, review_text, reviewer_name, review_date FROM coursera_cin_reviews').all();
   const scrapedAt = db.prepare('SELECT MAX(updated_at) AS t FROM coursera_cin_reviews').get().t;
   const bySlug = {};
   for (const r of rows) {
@@ -1607,7 +1606,7 @@ export function writeCourseraCinCourses(courses) {
 }
 export function readCourseraCinCourses() {
   const courses = db.prepare('SELECT id, name, slug FROM coursera_cin_courses').all()
-    .filter((c) => !EXCLUDED_CIN_SLUGS.has(c.slug));
+    .map((c) => ({ ...c, batch: cinBatchOf(c.slug) }));
   const scrapedAt = db.prepare('SELECT MAX(updated_at) AS t FROM coursera_cin_courses').get().t;
   return { courses, scrapedAt };
 }
@@ -1636,13 +1635,13 @@ export function writeCourseraCinMetrics(courses) {
   return result;
 }
 export function readCourseraCinMetrics() {
-  const rows = db.prepare('SELECT * FROM coursera_cin_metrics').all()
-    .filter((r) => !EXCLUDED_CIN_SLUGS.has(r.slug));
+  const rows = db.prepare('SELECT * FROM coursera_cin_metrics').all();
   const scrapedAt = db.prepare('SELECT MAX(updated_at) AS t FROM coursera_cin_metrics').get().t;
   const courses = rows.map((r) => ({
     name: (r.course_name || '').trim(), slug: r.slug, domain: r.domain, inSpecialization: !!r.in_specialization, launchDate: r.launch_date,
     enrollments: r.enrollments, paidEnrollments: r.paid_enrollments, completions: r.completions,
     completionRate: r.completion_rate, rating: r.rating, status: r.status,
+    batch: cinBatchOf(r.slug),   // 'Batch 2/4/11' for the client's completed-requirements courses
   }));
   return { courses, scrapedAt };
 }

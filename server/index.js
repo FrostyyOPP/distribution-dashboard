@@ -26,6 +26,7 @@ import {
   readRevenueDashboard, readCourseRevenueAcrossPlatforms,
   readFreshness, readPlatformFreshness, rawQuery,
 } from './db.js';
+import { CIN_CLIENT_BATCH_SLUGS, CIN_CLIENT_BATCH_LABEL } from './courseraCinExclusions.js';
 
 const app = express();
 const PORT = process.env.PORT || 5055;
@@ -874,7 +875,8 @@ const EXPORT_TABLES = [
   ['Coursera SW metrics', 'SELECT * FROM coursera_metrics'],
   ['Coursera SW status', 'SELECT * FROM coursera_course_status'],
   ['Coursera SW reviews', 'SELECT * FROM coursera_reviews'],
-  ['Coursera CIN metrics', `SELECT m.*, (SELECT group_concat(value, ', ') FROM json_each(i.instructor_names)) AS instructor_names
+  ['Coursera CIN metrics', `SELECT m.*, (SELECT group_concat(value, ', ') FROM json_each(i.instructor_names)) AS instructor_names,
+     CASE WHEN m.slug IN (${[...CIN_CLIENT_BATCH_SLUGS].map((s) => `'${s.replace(/'/g, "''")}'`).join(',')}) THEN '${CIN_CLIENT_BATCH_LABEL}' END AS batch
      FROM coursera_cin_metrics m LEFT JOIN coursera_cin_instructors i ON i.slug = m.slug`],
   ['Coursera CIN reviews', 'SELECT * FROM coursera_cin_reviews'],
   ['Coursera revenue quarterly', 'SELECT * FROM coursera_revenue_quarterly'],

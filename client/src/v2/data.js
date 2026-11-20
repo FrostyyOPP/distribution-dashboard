@@ -386,13 +386,14 @@ function downloadCsv(filename, headers, rows) {
 }
 
 export function exportCourseraCsv(rows) {
-  const headers = ['Course', 'Domain', 'Enrollments', 'Completions', 'Compl. Rate', 'Rating', 'Instructor', 'Instructor Names'];
+  const headers = ['Course', 'Domain', 'Enrollments', 'Completions', 'Compl. Rate', 'Rating', 'Instructor', 'Instructor Names', 'Batch'];
   const data = rows.map((c) => [
     c.name, c.domain || '', c.enrollments ?? '', c.completions ?? '',
     c.completionRate != null ? (c.completionRate <= 1 ? Math.round(c.completionRate * 100) : Math.round(c.completionRate)) + '%' : '',
     c.rating ? Number(c.rating).toFixed(2) : '',
     c.hasStarweaverInstructor == null ? '' : (c.hasStarweaverInstructor ? 'Yes' : 'No'),   // not checked for CIN / Dummies
     c.instructorNames?.length ? c.instructorNames.join('; ') : '',
+    c.batch || '',   // CIN: 'Batch 2/4/11' for the client's completed-requirements courses
   ]);
   downloadCsv(`coursera-courses-${new Date().toISOString().slice(0, 10)}.csv`, headers, data);
 }
