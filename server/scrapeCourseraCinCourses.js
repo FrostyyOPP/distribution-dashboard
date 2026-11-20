@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path';
 import { chromium } from 'playwright';
 import { minimizeWindow } from './browserWindow.js';
 import { writeCourseraCinCourses } from './db.js';
-import { EXCLUDED_CIN_SLUGS } from './courseraCinExclusions.js';
+import { CIN_CLIENT_BATCH_SLUGS, CIN_CLIENT_BATCH_LABEL } from './courseraCinExclusions.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AUTH_FILE = join(__dirname, 'coursera-auth.json');
@@ -95,11 +95,13 @@ process.stdout.write('\n');
 await browser.close();
 
 const allFound = [...seen.values()];
-const courses = allFound.filter((r) => !EXCLUDED_CIN_SLUGS.has(r.slug)).map((r) => ({ id: r.slug, name: r.name, slug: r.slug }));
-const excludedCount = allFound.length - courses.length;
+// Every course in the table is kept. The client's Batch 2/4/11 courses were excluded
+// here until 2026-11-20; they are now stored like the rest and tagged when read.
+const courses = allFound.map((r) => ({ id: r.slug, name: r.name, slug: r.slug }));
+const batchCount = courses.filter((c) => CIN_CLIENT_BATCH_SLUGS.has(c.slug)).length;
 const result = writeCourseraCinCourses(courses);
 if (result.guarded) {
   console.error(`⚠️ Refused to write — only ${courses.length} courses found, looks like a partial/failed run. Kept existing data. Re-run after reconnecting.`);
   process.exit(1);
 }
-console.log(`✅ ${courses.length} Coursera CIN courses (across ${pageNum} pages, ${excludedCount} excluded) → dashboard.db`);
+console.log(`✅ ${courses.length} Coursera CIN courses (across ${pageNum} pages; ${batchCount} tagged ${CIN_CLIENT_BATCH_LABEL}) → dashboard.db`);

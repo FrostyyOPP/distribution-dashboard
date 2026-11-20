@@ -905,15 +905,21 @@ function StatusBadge({ status }) {
 // showInstructorCheck: the ✓/✗ column for the shared instructors@starweaver.com account
 // (Starweaver's own catalogue only). showInstructorNames: the named instructors — on
 // wherever the data has them (Starweaver, and CIN from its public course pages).
-function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, showInstructorNames = showInstructorCheck, reviewsBySlug = {}, platform = 'coursera', isBookmarked, toggleBookmark, quarters = [] }) {
+function CourseraView({ rows: allRows, label = 'Coursera', showInstructorCheck = true, showInstructorNames = showInstructorCheck, reviewsBySlug = {}, platform = 'coursera', isBookmarked, toggleBookmark, quarters = [] }) {
   const [sort, setSort] = useState({ key: 'enrollments', dir: -1 });
   const [q, setQ] = useState('');
+  // CIN: the client's Batch 2/4/11 courses are tagged (c.batch). "Hide" removes them
+  // before anything is counted, so the table AND the totals tiles leave them out.
+  const [hideBatch, setHideBatch] = useState(false);
+  const batchLabel = allRows.find((c) => c.batch)?.batch;
+  const batchCount = allRows.filter((c) => c.batch).length;
+  const rows = useMemo(() => (hideBatch ? allRows.filter((c) => !c.batch) : allRows), [allRows, hideBatch]);
   const pct = (r) => (r == null ? '—' : (r <= 1 ? Math.round(r * 100) : Math.round(r)) + '%');
   // search across the fields actually shown in the table, so a hit is visible
   const f = useColumnFilter('coursera');
   const filtered = useMemo(() => {
     const s = q.trim().toLowerCase();
-    const bySearch = !s ? rows : rows.filter((c) => [c.name, c.domain, c.status, ...(c.instructorNames || [])]
+    const bySearch = !s ? rows : rows.filter((c) => [c.name, c.domain, c.status, c.batch, ...(c.instructorNames || [])]
       .some((v) => String(v || '').toLowerCase().includes(s)));
     return applyFilter(bySearch, f.spec, f.fields);
   }, [rows, q, f.spec, f.fields]);
@@ -951,6 +957,13 @@ function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, sh
           <input className="table-search" placeholder="Search course, domain, status or instructor…" value={q}
             onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setQ(''); }} />
           <FilterBuilder {...f} rows={rows} />
+          {batchCount > 0 && (
+            <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, whiteSpace: 'nowrap', cursor: 'pointer' }}
+              title={`${batchCount} courses from the client's completed-requirements list (${batchLabel}). Ticked, they are left out of the table and the totals above.`}>
+              <input type="checkbox" checked={hideBatch} onChange={(e) => setHideBatch(e.target.checked)} />
+              Hide {batchLabel} ({batchCount})
+            </label>
+          )}
           <span className="muted">{data.length === rows.length ? `${rows.length} courses` : `${data.length} of ${rows.length}`}</span>
         </div>
         <ActiveFilter f={f} shown={data.length} total={rows.length} />
@@ -964,7 +977,7 @@ function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, sh
             return (
             <tr key={i}>
               <td><BookmarkButton active={isBookmarked(platform, bmKey)} onClick={() => toggleBookmark(platform, bmKey, c.name)} /></td>
-              <td style={{ fontWeight: 500 }}>{c.name}</td>
+              <td style={{ fontWeight: 500 }}>{c.name}{c.batch && <span className="pill" style={{ marginLeft: 6, background: '#fef3c7', color: '#92400e', fontSize: 11, fontWeight: 600 }} title="From the client's completed-requirements list">{c.batch}</span>}</td>
               <td className="muted" style={{ fontSize: 13 }}>{c.domain || '—'}</td>
               <td style={{ textAlign: 'center' }}><StatusBadge status={c.status} /></td>
               <td style={{ textAlign: 'right' }}>{num(c.enrollments)}</td>
