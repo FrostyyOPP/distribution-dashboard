@@ -189,7 +189,7 @@ export default function AppV2() {
                distinct key React reuses the instance and carries the search
                term and sort over to the other catalog. */
             platform === 'coursera' ? <CourseraView key="coursera" rows={coursera} quarters={courseraQuarters} reviewsBySlug={courseraReviews} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
-            : platform === 'coursera_cin' ? <CourseraView key="coursera_cin" rows={courseraCin} label="Coursera CIN" showInstructorCheck={false} reviewsBySlug={courseraCinReviews} platform="coursera_cin" isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
+            : platform === 'coursera_cin' ? <CourseraView key="coursera_cin" rows={courseraCin} label="Coursera CIN" showInstructorCheck={false} showInstructorNames reviewsBySlug={courseraCinReviews} platform="coursera_cin" isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'coursera_dummies' ? <CourseraView key="coursera_dummies" rows={courseraDummies} label="Courses for Dummies" showInstructorCheck={false} platform="coursera_dummies" isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'futurelearn' ? <FutureLearnView rows={futurelearn} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
             : platform === 'linkedin' ? <LinkedInView data={linkedin} isBookmarked={isBookmarked} toggleBookmark={toggleBookmark} />
@@ -902,7 +902,10 @@ function StatusBadge({ status }) {
   return <span className="pill" style={{ background: s.bg, color: s.fg }}>{s.text}</span>;
 }
 
-function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, reviewsBySlug = {}, platform = 'coursera', isBookmarked, toggleBookmark, quarters = [] }) {
+// showInstructorCheck: the ✓/✗ column for the shared instructors@starweaver.com account
+// (Starweaver's own catalogue only). showInstructorNames: the named instructors — on
+// wherever the data has them (Starweaver, and CIN from its public course pages).
+function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, showInstructorNames = showInstructorCheck, reviewsBySlug = {}, platform = 'coursera', isBookmarked, toggleBookmark, quarters = [] }) {
   const [sort, setSort] = useState({ key: 'enrollments', dir: -1 });
   const [q, setQ] = useState('');
   const pct = (r) => (r == null ? '—' : (r <= 1 ? Math.round(r * 100) : Math.round(r)) + '%');
@@ -952,7 +955,7 @@ function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, re
         </div>
         <ActiveFilter f={f} shown={data.length} total={rows.length} />
         <div className="table-scroll"><table>
-        <thead><tr><th className="no-sort"></th>{th('name', 'Course', 'left')}{th('domain', 'Domain', 'left')}{th('status', 'Status', 'center')}{th('enrollments', 'Enrollments')}{th('completions', 'Completions')}{th('completionRate', 'Compl. Rate')}{th('rating', 'Rating')}<th className="no-sort">Reviews</th>{th('revenue', 'Revenue')}{quarters.map((qt, qi) => <th key={qt} style={{ textAlign: 'right' }} onClick={() => setSort((s) => ({ key: `q${qi}`, dir: s.key === `q${qi}` ? -s.dir : -1 }))}>{qt}{sort.key === `q${qi}` ? (sort.dir < 0 ? ' \u2193' : ' \u2191') : ''}</th>)}{showInstructorCheck && <th className="no-sort">Instructor</th>}{showInstructorCheck && th('instructorNames', 'Instructor Names', 'left')}</tr></thead>
+        <thead><tr><th className="no-sort"></th>{th('name', 'Course', 'left')}{th('domain', 'Domain', 'left')}{th('status', 'Status', 'center')}{th('enrollments', 'Enrollments')}{th('completions', 'Completions')}{th('completionRate', 'Compl. Rate')}{th('rating', 'Rating')}<th className="no-sort">Reviews</th>{th('revenue', 'Revenue')}{quarters.map((qt, qi) => <th key={qt} style={{ textAlign: 'right' }} onClick={() => setSort((s) => ({ key: `q${qi}`, dir: s.key === `q${qi}` ? -s.dir : -1 }))}>{qt}{sort.key === `q${qi}` ? (sort.dir < 0 ? ' \u2193' : ' \u2191') : ''}</th>)}{showInstructorCheck && <th className="no-sort">Instructor</th>}{showInstructorNames && th('instructorNames', 'Instructor Names', 'left')}</tr></thead>
         <tbody>
           {data.map((c, i) => {
             const reviews = (c.slug && reviewsBySlug[c.slug]) || [];
@@ -975,7 +978,7 @@ function CourseraView({ rows, label = 'Coursera', showInstructorCheck = true, re
                 return <td key={qt} style={{ textAlign: 'right', color: v ? '#374151' : '#9ca3af' }}>{v != null ? usd(v) : '—'}</td>;
               })}
               {showInstructorCheck && <td style={{ textAlign: 'center' }}>{c.hasStarweaverInstructor ? <span title="instructors@starweaver.com is an Instructor" style={{ color: '#10b981' }}>✓</span> : <span title="instructors@starweaver.com not found as Instructor" style={{ color: '#ef4444' }}>✗</span>}</td>}
-              {showInstructorCheck && <td className="muted" style={{ fontSize: 13 }}>{c.instructorNames?.length ? c.instructorNames.join(', ') : '—'}</td>}
+              {showInstructorNames && <td className="muted" style={{ fontSize: 13 }}>{c.instructorNames?.length ? c.instructorNames.join(', ') : '—'}</td>}
             </tr>
             );
           })}
