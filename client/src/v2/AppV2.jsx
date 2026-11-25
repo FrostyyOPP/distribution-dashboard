@@ -658,7 +658,7 @@ function IbmView({ data }) {
             {certs.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
           <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', fontSize: 13 }}>
-            <input type="checkbox" checked={listOnly} onChange={(e) => setListOnly(e.target.checked)} /> Only our IBM list
+            <input type="checkbox" checked={listOnly} onChange={(e) => setListOnly(e.target.checked)} /> Only Starweaver-owned
           </label>
           <a className="btn btn-secondary" style={{ whiteSpace: 'nowrap', textDecoration: 'none' }} href={exportHref}
             title="Excel in the IBM report's layout (certificate colours, low ratings in red), plus a sheet with every figure">⬇ Export Excel{cert !== 'all' ? ' (this certificate)' : ''}</a>
@@ -666,7 +666,7 @@ function IbmView({ data }) {
         </div>
         <div className="table-scroll"><table>
           <thead><tr>
-            {th('certificate', 'Professional Certificate', 'left')}{th('courseNo', 'No.', 'left')}{th('name', 'Course title', 'left')}
+            {th('certificate', 'Professional Certificate', 'left')}{th('courseNo', 'No.', 'left')}{th('name', 'Course title', 'left')}{th('owner', 'Course Owner', 'left')}
             {th('enrollments', `Enrollments ${mon(data.thisMonth)}`)}{th('enrolledEndLastMonth', `Enrollments ${mon(data.lastMonth)}`)}{th('change', 'Change vs last month')}{th('rating', 'Rating')}
             {th('frate', 'Completion Rate', 'right', sky)}{th('fbefore', 'Drop-off before Module 1', 'right', sky)}{th('fafter', 'Drop-off after Module 1', 'right', sky)}
             <th className="no-sort">Coursera</th>
@@ -682,7 +682,8 @@ function IbmView({ data }) {
                 <tr key={c.slug} style={{ background: IBM_BAND[c.certSlug] || 'transparent', color: red ? '#dc2626' : undefined }} title={red ? 'Rating below 4' : undefined}>
                   <td style={{ fontSize: 13 }}>{c.certificate || '—'}</td>
                   <td style={{ fontSize: 13 }}>{c.courseNo ? `C${c.courseNo}` : '—'}</td>
-                  <td style={{ fontWeight: 500, minWidth: 260 }}><a href={c.url} target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>{c.name}</a>{c.listTitle && c.listTitle !== c.name ? <div className="muted" style={{ fontSize: 12, fontWeight: 400 }}>IBM list: {c.listTitle}</div> : null}{!c.inList ? <div className="muted" style={{ fontSize: 11.5, fontWeight: 400 }}>other IBM course in the certificate</div> : null}</td>
+                  <td style={{ fontWeight: 500, minWidth: 260 }}><a href={c.url} target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>{c.name}</a>{c.listTitle && c.listTitle !== c.name ? <div className="muted" style={{ fontSize: 12, fontWeight: 400 }}>IBM list: {c.listTitle}</div> : null}</td>
+                  <td style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap' }}>{c.owner || '—'}</td>
                   <td style={{ textAlign: 'right', fontWeight: 600 }}>{num(c.enrollments)}</td>
                   <td style={{ textAlign: 'right' }}>{num(c.enrolledEndLastMonth)}</td>
                   <td style={{ textAlign: 'right' }}>{change == null ? '—' : num(change)}</td>

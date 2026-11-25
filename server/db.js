@@ -1818,6 +1818,8 @@ export function readCourseraIbmCourses() {
     const enrolledThisMonth = monthly.find((m) => m.month === thisMonth)?.enrollments ?? null;
     return {
       id: b.slug, slug: b.slug, name: (s?.course_name || b.name || r.name || '').trim(), listTitle: r.list_title ?? null, inList: !!r.list_title,
+      // Course Owner (user, 2026-11-25): the courses on our IBM list are built by Starweaver; the certificates' other courses are IBM's own
+      owner: r.list_title ? 'Starweaver' : 'IBM',
       batch: r.batch ?? null, status: r.status ?? null, level: r.level ?? null, launched: r.launched ?? null,
       certificate: b.cert ?? r.certificate ?? null, domain: b.cert ?? r.certificate ?? null, certSlug: b.certSlug, courseNo: b.courseNo,
       url: r.url || `https://www.coursera.org/learn/${b.slug}`,

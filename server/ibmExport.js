@@ -34,6 +34,7 @@ export async function buildIbmWorkbook(data, { certificate } = {}) {
     { header: 'Professional Certificate', key: 'cert', width: 44 },
     { header: 'Course No.', key: 'no', width: 10 },
     { header: 'Course title', key: 'title', width: 60 },
+    { header: 'Course Owner', key: 'owner', width: 13 },
     { header: `Enrollments ${now}`, key: 'enr', width: 14, style: { numFmt: '#,##0' } },
     { header: `Enrollments ${prev}`, key: 'enrPrev', width: 14, style: { numFmt: '#,##0' } },
     { header: 'Change vs last month', key: 'chg', width: 13, style: { numFmt: '#,##0' } },
@@ -45,10 +46,10 @@ export async function buildIbmWorkbook(data, { certificate } = {}) {
   const head = ws.getRow(1);
   head.height = 44;
   head.eachCell((cell, col) => {
-    const sky = col >= 8;
+    const sky = col >= 9;
     cell.font = { ...font, bold: true, color: { argb: sky ? NAVY : 'FFFFFFFF' } };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: sky ? SKY : NAVY } };
-    cell.alignment = { wrapText: true, vertical: 'middle', horizontal: col <= 3 ? 'left' : 'center' };
+    cell.alignment = { wrapText: true, vertical: 'middle', horizontal: col <= 4 ? 'left' : 'center' };
   });
   let notes = 0;
   for (const c of rows) {
@@ -56,6 +57,7 @@ export async function buildIbmWorkbook(data, { certificate } = {}) {
     const row = ws.addRow({
       cert: c.certificate, no: c.courseNo ? `C${c.courseNo}` : '',
       title: { text: c.name, hyperlink: c.url },
+      owner: c.owner,
       enr: c.enrollments ?? null, enrPrev: c.enrolledEndLastMonth ?? null,
       chg: c.enrollments != null && c.enrolledEndLastMonth != null ? c.enrollments - c.enrolledEndLastMonth : null,
       rating: c.ratings ? Math.round(c.rating * 100) / 100 : null,
@@ -65,7 +67,7 @@ export async function buildIbmWorkbook(data, { certificate } = {}) {
     row.eachCell({ includeEmpty: true }, (cell, col) => {
       cell.font = { ...font, color: { argb: red ? 'FFFF0000' : 'FF000000' }, underline: col === 3 };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND[c.certSlug] || 'FFFFFFFF' } };
-      cell.alignment = { vertical: 'middle', horizontal: col <= 3 ? 'left' : 'right' };
+      cell.alignment = { vertical: 'middle', horizontal: col <= 4 ? 'left' : 'right' };
       cell.border = { bottom: { style: 'hair', color: { argb: 'FFBFBFBF' } } };
     });
     if (c.funnelNoAccess) {
@@ -77,7 +79,7 @@ export async function buildIbmWorkbook(data, { certificate } = {}) {
       row.getCell('rate').note = `All learners. Most learners are still in a live session, so Coursera's default (eligible-learner) view counts only the ${c.funnelEnrolled ?? ''} who finished and shows ${Math.round((c.funnelCompletionRate ?? 1) * 100)}%.`;
     }
   }
-  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1 + rows.length, column: 10 } };
+  ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1 + rows.length, column: 11 } };
   const foot = ws.addRow([]);
   const f1 = ws.addRow([`Enrollments: each course's Coursera Analytics › Summary page (all time, all course versions); "${prev}" = at the end of that month. Completion and drop-off: Analytics › Progress Funnel.`]);
   f1.getCell(1).font = { ...font, italic: true, color: { argb: 'FF595959' } };
@@ -91,7 +93,7 @@ export async function buildIbmWorkbook(data, { certificate } = {}) {
   const ws2 = wb.addWorksheet('All figures', { views: [{ state: 'frozen', ySplit: 1, xSplit: 3 }] });
   const cols = [
     ['Professional Certificate', 40, (c) => c.certificate], ['Course No.', 9, (c) => (c.courseNo ? `C${c.courseNo}` : '')],
-    ['Course title', 52, (c) => c.name], ['On the IBM list', 10, (c) => (c.inList ? 'Yes' : 'No')], ['IBM list title', 40, (c) => c.listTitle || ''],
+    ['Course title', 52, (c) => c.name], ['Course Owner', 11, (c) => c.owner], ['On the IBM list', 10, (c) => (c.inList ? 'Yes' : 'No')], ['IBM list title', 40, (c) => c.listTitle || ''],
     ['Batch', 14, (c) => c.batch || ''],
     ['Unique visitors', 12, (c) => c.visitors, '#,##0'], ['Enrolled (all time)', 12, (c) => c.enrollments, '#,##0'],
     ['Started (all time)', 12, (c) => c.starters, '#,##0'], ['Completed (all time)', 12, (c) => c.completions, '#,##0'],
@@ -138,6 +140,7 @@ export async function buildIbmWorkbook(data, { certificate } = {}) {
     ['Learner Drop-off Before Module 1: the funnel\'s drop rate at "Module 01 Started Item" — enrolled learners who never started Module 1.'],
     ['Learner Drop-off After Module 1: of the learners who completed Module 1, the share who have not completed the course (from the funnel\'s checkpoint drop rates).'],
     ['Courses run in sessions (italic): most learners are still in a live session and Coursera\'s eligible view counts only those who finished, so the all-learners figures are shown.'],
+    ['Course Owner: Starweaver for the courses on our IBM list (built by Starweaver), IBM for the certificates\' other courses.'],
     ['Red rows: rating below 4. "no access": our Coursera login has no Analytics access to that course.'],
   ];
   for (const [t, f] of lines) { const r = ws3.addRow([t]); r.getCell(1).font = { ...font, ...(f || {}), color: { argb: f ? 'FF000000' : 'FF404040' } }; r.getCell(1).alignment = { wrapText: true }; }
